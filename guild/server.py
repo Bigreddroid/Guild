@@ -21,11 +21,13 @@ import uuid
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from guild import vendor
 from guild.agents import agent_modes, default_agents
 from guild.lead import DEMO_GOAL
 from guild.run import run
@@ -111,6 +113,13 @@ def create_app(brain=None) -> FastAPI:
             r.emit({"type": "error", "message": f"run failed: {type(exc).__name__}"})
         finally:
             r.done = True
+
+    @app.get(vendor.PATH, include_in_schema=False)
+    def vendor_page(passengers: Optional[str] = None, date: Optional[str] = None):
+        try:
+            return HTMLResponse(vendor.page(vendor.parse(passengers, date)))
+        except vendor.VendorInputError as exc:
+            return HTMLResponse(vendor.page(error=str(exc)), status_code=400)
 
     @app.get("/healthz")
     def healthz():

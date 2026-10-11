@@ -20,3 +20,5 @@ services:
         sync: false
       - key: CHANNEL3_API_KEY
         sync: false
+      - key: KERNEL_API_KEY
+        sync: false
