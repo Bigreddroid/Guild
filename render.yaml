@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: guild
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && cd web && npm ci && npm run build
+    startCommand: uvicorn guild.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NODE_VERSION
+        value: 22.12.0
+      # Added at the end, in the Render dashboard (never committed):
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
