@@ -171,10 +171,37 @@ def _clean_quotes(result) -> list:
 
 
 class Doer(Agent):
+    """Sends the team email through a Zapier Catch Hook."""
     tool, price, eta_s = "Zapier", D("0.20"), 30
 
+    # Fixed by Guild, never taken from visitors. `.example` addresses can't receive
+    # mail; set the Zap's "To" to your own inbox to watch the demo arrive.
+    RECIPIENTS = [f"teammate{i}@team.example" for i in range(1, 7)]
+    SUBJECT = "Lisbon offsite plan"
+
+    def __init__(self, card: AgentCard, zapier=None):
+        super().__init__(card)
+        self.zapier = zapier
+
+    def work(self, job: Job) -> dict:
+        if self.zapier is None or job.id != "email":
+            return super().work(job)
+        payload = {"source": "Guild demo", "subject": self.SUBJECT, "recipients": self.RECIPIENTS,
+                   "recipients_text": ", ".join(self.RECIPIENTS),
+                   "body": ("Hi team, the Lisbon offsite is planned: venue shortlisted, notebooks, pens and "
+                            "bottles sourced, airport transfers quoted. Sent by Guild's Doer agent.")}
+        try:
+            request_id = self.zapier.send(payload)
+        except Exception as exc:  # throttled or failed: say plainly that this is sample data
+            out = super().work(job)
+            out["note"] = f"Zapier not used ({exc}); sample data"
+            return out
+        return {"mode": "live", "tool": self.tool,
+                "items": [{"to": r, "subject": self.SUBJECT, "via": "Zapier", "zapier_request": request_id}
+                          for r in self.RECIPIENTS]}
+
     def sample(self, job):
-        return [{"to": f"teammate{i}@team.example", "subject": "Lisbon offsite plan"} for i in range(1, 7)]
+        return [{"to": r, "subject": self.SUBJECT} for r in self.RECIPIENTS]
 
 
 class CheapBot(Agent):
@@ -185,7 +212,7 @@ class CheapBot(Agent):
         return [{"title": "notebook"}]
 
 
-def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None) -> dict:
+def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None, zapier=None) -> dict:
     """The demo roster. The Sourcer searches Channel3 live when given a client
     (default: from CHANNEL3_API_KEY), otherwise it returns labelled sample data."""
     if channel3 is None:
@@ -199,6 +226,7 @@ def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None) ->
     ]
     agents = {card.id: cls(card) for cls, card in cards}
     agents["sourcer"].channel3 = channel3
+    agents["doer"].zapier = zapier if zapier is not None else _env_zapier(os.environ.get("ZAPIER_HOOK_URL", ""))
     if elastic is None:
         elastic = _env_elastic(os.environ.get("ELASTIC_URL", ""), os.environ.get("ELASTIC_API_KEY", ""))
     agents["researcher"].elastic = elastic
@@ -215,6 +243,13 @@ def public_vendor_url() -> str:
     from guild.vendor import PATH
     base = os.environ.get("GUILD_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
     return base.rstrip("/") + PATH if base.startswith("https://") else ""
+
+
+@functools.lru_cache(maxsize=2)
+def _env_zapier(url: str):
+    """One shared client per hook URL: its throttle must span runs."""
+    from guild.zapier import HOOK_PREFIX, Zapier
+    return Zapier(url) if url.startswith(HOOK_PREFIX) else None
 
 
 @functools.lru_cache(maxsize=2)
@@ -242,4 +277,5 @@ def agent_modes() -> dict:
             "researcher": "live (Elastic)" if os.environ.get("ELASTIC_URL", "").startswith("https://")
             and os.environ.get("ELASTIC_API_KEY") else "simulated",
             "web_operator": "live (KERNEL)" if os.environ.get("KERNEL_API_KEY") and public_vendor_url() else "simulated",
-            "doer": "simulated"}
+            "doer": "live (Zapier, max 1 email per 10 min)"
+            if os.environ.get("ZAPIER_HOOK_URL", "").startswith("https://hooks.zapier.com/hooks/catch/") else "simulated"}
