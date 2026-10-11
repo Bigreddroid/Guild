@@ -33,6 +33,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from guild import funding, shops, vendor
 from guild.agents import agent_modes, default_agents
 from guild.bounty import Want, WantError, parse_want
+from guild.deals import DealLog
 from guild.fetcher import SafeFetcher
 from guild.hunt import OpenHunt, run_hunt
 from guild.hunters import default_hunters
@@ -129,9 +130,15 @@ def default_hunters_from_env() -> dict:
                            kernel=_env_kernel(os.environ.get("KERNEL_API_KEY", "")), claude=claude)
 
 
+def default_deal_log() -> DealLog:
+    from guild.agents import _env_elastic, _env_zapier
+    return DealLog(elastic=_env_elastic(os.environ.get("ELASTIC_URL", ""), os.environ.get("ELASTIC_API_KEY", "")),
+                   zapier=_env_zapier(os.environ.get("ZAPIER_HOOK_URL", "")))
+
+
 def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hunters=None,
                hunt_speed: float = HUNT_SPEED, registry: Optional[Registry] = None,
-               hunt_deadline_s: float = HUNT_DEADLINE_S) -> FastAPI:
+               hunt_deadline_s: float = HUNT_DEADLINE_S, deals: Optional[DealLog] = None) -> FastAPI:
     """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
     `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
@@ -139,6 +146,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
     make_brain = brain or default_brain
     make_hunters = hunters or default_hunters_from_env
     agents_registry = registry if registry is not None else default_registry()
+    deal_log = deals if deals is not None else default_deal_log()
     open_hunts: dict = {}       # run id -> {"door", "want", "opened"}
     signup_limiter = RateLimiter(limit=5, window_s=3600)
     claim_limiter = RateLimiter(limit=60, window_s=60)
@@ -165,7 +173,8 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                 try:
                     # With outside agents registered, the bounty stays open for its whole window.
                     result = run_hunt(want, agents_registry.adopt(make_hunters()), hunt_fetch, r.emit, deadline_s=hunt_deadline_s,
-                                      speed=hunt_speed, door=door, close_early=len(agents_registry) == 0)
+                                      speed=hunt_speed, door=door, close_early=len(agents_registry) == 0,
+                                      on_winner=deal_log.on_winner(run_id))
                 finally:
                     open_hunts.pop(run_id, None)
                     agents_registry.save()  # every agent's reputation persists
@@ -281,6 +290,11 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
             raise HTTPException(409, "this bounty has closed")
         return {"accepted": True, "note": "verified within seconds; watch the bounty's event stream for the result"}
 
+    @app.get("/api/deals")
+    def recent_deals(size: int = 10):
+        """Deals Guild verified, newest first, with how much buyers saved (Elastic when configured)."""
+        return deal_log.recent(min(max(size, 1), 50))
+
     @app.get("/api/demo/catalogue")
     def demo_catalogue():
         """Guild's labelled demo shops, for outside agents testing without a search API.
@@ -309,6 +323,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                 "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes(),
                 "hunters": {h.card.id: f"{h.mode} ({h.tool})" for h in make_hunters().values()},
                 "payments": "PayPal sandbox" if paypal else "preview only (no PayPal keys)",
+                "deal_history": deal_log.store, "deal_alerts": "Zapier" if deal_log.zapier else "off",
                 "funding": bool(funds and public_url)}
 
     @app.post("/api/runs")

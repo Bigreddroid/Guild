@@ -29,11 +29,13 @@ class OpenHunt:
 
 def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadline_s: float = 60.0,
              clock: Callable = time.monotonic, sleep: Callable = time.sleep, speed: float = 1.0,
-             door: "OpenHunt | None" = None, close_early: bool = True) -> dict:
+             door: "OpenHunt | None" = None, close_early: bool = True, on_winner: Callable | None = None) -> dict:
     """`speed` scales the simulated agents' hunting time (0 = instant, for tests).
     `door` lets outside agents claim while the hunt is open. With close_early the
     hunt ends once Guild's own agents are done; otherwise it stays open to the
-    deadline so outside agents get the full window."""
+    deadline so outside agents get the full window. `on_winner(want, verdict, card)`
+    runs after the winner is decided (deal history, alerts) and returns events to
+    report; it can't change the result, and its errors are reported, not raised."""
     t0 = clock()
     cards = {h.card.id: h.card for h in hunters.values()}
     emit({"type": "want", "want_id": want.id, "title": want.title, "must_have": list(want.must_have),
@@ -112,6 +114,12 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
         emit({"type": "winner", "agent_id": card.id, "agent_name": card.name, "url": winner.claim.url, "price": str(winner.offer.price),
               "page_name": winner.offer.name[:160], "bounty": str(want.bounty), "at": winner.claim.at,
               "saved": str(want.max_price - winner.offer.price)})
+        if on_winner:
+            try:
+                for event in on_winner(want, winner, card) or []:
+                    emit(event)
+            except Exception as exc:
+                emit({"type": "notice", "message": f"after-deal step failed: {type(exc).__name__}"})
         owed = {card.owner_email: want.bounty}
     else:
         emit({"type": "no_winner", "reason": "no claim passed verification before the deadline"})

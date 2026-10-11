@@ -1,10 +1,12 @@
-"""Elasticsearch, used by the Researcher agent to shortlist venues.
+"""Elasticsearch: the Researcher agent's venue shortlist, and the history of deals
+Guild verified (see deals.py).
 
 Plain Elasticsearch REST, as the official client sends it:
     Authorization: ApiKey <encoded key>      (Elastic Cloud / Serverless API key)
     PUT  /{index}                            create the index with mappings (400 if it exists)
     POST /_bulk?refresh=wait_for             NDJSON index actions with fixed _ids (idempotent)
-    POST /{index}/_search                    bool filter + sort
+    POST /{index}/_search                    bool filter + sort, or sort + sum aggregation
+    PUT  /{index}/_doc/{id}?refresh=wait_for one deal, keyed by its bounty (idempotent)
 """
 from __future__ import annotations
 
@@ -14,6 +16,13 @@ from typing import Optional
 import httpx
 
 from guild import venues
+
+DEALS_INDEX = "guild-deals"
+DEALS_MAPPINGS = {"properties": {
+    "found_at": {"type": "date"}, "title": {"type": "text"}, "shop": {"type": "keyword"},
+    "url": {"type": "keyword"}, "agent": {"type": "keyword"}, "currency": {"type": "keyword"},
+    "ship_to": {"type": "keyword"}, "price": {"type": "double"}, "max_price": {"type": "double"},
+    "saved": {"type": "double"}, "bounty": {"type": "double"}, "demo": {"type": "boolean"}}}
 
 
 class ElasticError(Exception):
@@ -28,6 +37,7 @@ class Elastic:
         self._http = httpx.Client(base_url=url.rstrip("/"), timeout=timeout_s, transport=transport,
                                   headers={"Authorization": f"ApiKey {api_key}"})
         self._seeded = False
+        self._deals_ready = False
 
     def _req(self, method: str, path: str, *, body=None, content: Optional[bytes] = None,
              content_type: str = "application/json", ok=(200, 201)) -> httpx.Response:
@@ -76,6 +86,32 @@ class Elastic:
             except (KeyError, TypeError, ValueError):
                 continue
         return out
+
+    def _deals_index(self) -> None:
+        if self._deals_ready:
+            return
+        r = self._req("PUT", f"/{DEALS_INDEX}", body={"mappings": DEALS_MAPPINGS}, ok=(200, 201, 400))
+        if r.status_code == 400 and "resource_already_exists_exception" not in r.text:
+            raise ElasticError("could not create the deals index")
+        self._deals_ready = True
+
+    def put_deal(self, deal_id: str, doc: dict) -> None:
+        """Store one verified deal. The bounty id is the document id, so a retry overwrites."""
+        self._deals_index()
+        self._req("PUT", f"/{DEALS_INDEX}/_doc/{deal_id}?refresh=wait_for", body=doc)
+
+    def recent_deals(self, size: int = 10) -> dict:
+        """Newest deals first, plus how many there are and what buyers saved in total."""
+        self._deals_index()
+        body = {"size": size, "sort": [{"found_at": "desc"}], "track_total_hits": True,
+                "aggs": {"saved": {"sum": {"field": "saved"}}}}
+        data = _json(self._req("POST", f"/{DEALS_INDEX}/_search", body=body))
+        hits = data.get("hits") or {}
+        total = hits.get("total")
+        count = total.get("value") if isinstance(total, dict) else total
+        saved = ((data.get("aggregations") or {}).get("saved") or {}).get("value")
+        docs = [h["_source"] for h in hits.get("hits") or [] if isinstance(h, dict) and isinstance(h.get("_source"), dict)]
+        return {"deals": docs, "count": int(count or 0), "saved": float(saved or 0)}
 
 
 def _json(r: httpx.Response) -> dict:

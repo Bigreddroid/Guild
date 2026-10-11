@@ -32,18 +32,19 @@ Guild refuses any `PAYPAL_BASE_URL` that isn't `https://api-m.sandbox.paypal.com
 
 Sign up at trychannel3.com, create an API key, and set `CHANNEL3_API_KEY`.
 
-## 5. Elastic (Researcher)
+## 5. Elastic (verified-deal history, and the Researcher)
 
 1. Start an Elastic Cloud trial and create a deployment or a serverless Elasticsearch project.
 2. Copy the **Elasticsearch endpoint**, the https URL, into `ELASTIC_URL`.
 3. Create an **API key** and set it as `ELASTIC_API_KEY`.
-4. On the first run, Guild creates the `guild-venues` index and loads the demo catalogue.
+4. Guild creates its indexes on first use: `guild-deals` (every verified deal, newest first, with the total buyers saved computed by an aggregation) and `guild-venues` (the Researcher's demo catalogue).
+5. `/healthz` should show `"deal_history": "Elastic"`. Without these keys, the history is kept in the server's memory.
 
 ## 6. KERNEL (Web Operator)
 
 Sign up at kernel.sh, create an API key, and set `KERNEL_API_KEY`. On Render nothing else is needed. Elsewhere, set `GUILD_PUBLIC_URL` to the site's public https address, so the cloud browser can reach `/vendor/lisbon-transfers`.
 
-## 7. Zapier (Doer)
+## 7. Zapier ("deal found" alerts, and the Doer)
 
 1. Create a Zap. For the trigger, choose **Webhooks by Zapier → Catch Hook**, and copy the hook URL.
 2. Send one test run so Zapier sees the fields `subject`, `recipients_text` and `body`.
@@ -53,7 +54,9 @@ Sign up at kernel.sh, create an API key, and set `KERNEL_API_KEY`. On Render not
    - **Body:** `body` plus "To: `recipients_text`".
 4. Turn the Zap on, and set the hook URL as `ZAPIER_HOOK_URL`.
 
-Live sends are capped at one per 10 minutes. Runs in between use labelled sample output.
+When a bounty finds a verified deal, Guild posts a `deal_found` message to the same hook. It uses the same `subject`, `recipients_text` and `body` fields, plus `price`, `url`, `shop`, `saved` and `agent` if you want to map them. Your Zap decides who receives it; Guild never sends to an address a visitor typed.
+
+Live sends are capped at one per 10 minutes, shared by both uses. Sends in between are skipped and say so on the page.
 
 ## 8. Licences (watermarks)
 
