@@ -13,6 +13,7 @@ is served from "/" when it exists.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import threading
@@ -29,8 +30,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
-from guild import funding, vendor
+from guild import funding, shops, vendor
 from guild.agents import agent_modes, default_agents
+from guild.fetcher import SafeFetcher
+from guild.hunt import run_hunt
+from guild.hunters import default_hunters
 from guild.lead import DEMO_GOAL
 from guild.paypal import PayPalError
 from guild.run import run
@@ -41,6 +45,8 @@ DEFAULT_BUDGET = Decimal("3.00")
 STEP_DELAY_S = float(os.environ.get("GUILD_STEP_DELAY_S", "0.6"))
 MAX_CONCURRENT = 3              # runs executing at once (each may call Claude)
 STREAM_TIMEOUT_S = 300
+HUNT_DEADLINE_S = float(os.environ.get("GUILD_HUNT_DEADLINE_S", "45"))
+HUNT_SPEED = float(os.environ.get("GUILD_HUNT_SPEED", "1.0"))  # scales simulated agents' hunting time
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 
@@ -110,12 +116,26 @@ class Run:
 _NOT_SET = object()
 
 
-def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) -> FastAPI:
+def default_hunters_from_env() -> dict:
+    """Deal-hunting agents, live wherever their keys are set."""
+    from guild.agents import _env_channel3, _env_kernel
+    claude = None
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        import anthropic
+        claude = anthropic.Anthropic()
+    return default_hunters(channel3=_env_channel3(os.environ.get("CHANNEL3_API_KEY", "")),
+                           kernel=_env_kernel(os.environ.get("KERNEL_API_KEY", "")), claude=claude)
+
+
+def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hunters=None,
+               hunt_speed: float = HUNT_SPEED) -> FastAPI:
     """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
     `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
 
     make_brain = brain or default_brain
+    make_hunters = hunters or default_hunters_from_env
+    hunt_fetch = SafeFetcher(local=shops.serve)
     paypal = funding.paypal_from_env() if paypal is _NOT_SET else paypal
     public_url = public_url if public_url is not None else funding.public_base_url()
     funds = funding.Funds(paypal) if paypal else None
@@ -127,10 +147,16 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
     def running() -> int:
         return sum(1 for r in runs.values() if not r.done)
 
-    def execute(r: Run, run_id: str, budget: Decimal, authorization_id: Optional[str]) -> None:
+    def execute(r: Run, run_id: str, budget: Decimal, authorization_id: Optional[str], kind: str = "market") -> None:
         try:
-            lead, reviewer = make_brain()
-            result = run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
+            if kind == "hunt":
+                # The budget is the bounty: held on PayPal, paid in full to the winner's developer.
+                want = dataclasses.replace(shops.DEMO_WANT, bounty=budget)
+                result = run_hunt(want, make_hunters(), hunt_fetch, r.emit, deadline_s=HUNT_DEADLINE_S,
+                                  speed=hunt_speed)
+            else:
+                lead, reviewer = make_brain()
+                result = run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
             if authorization_id:
                 r.emit(funding.settle(paypal, run_id, authorization_id, budget, result["spent"], result["owed"]))
             else:
@@ -148,7 +174,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
         finally:
             r.done = True
 
-    def start_run(budget: Decimal, authorization_id: Optional[str] = None) -> str:
+    def start_run(budget: Decimal, authorization_id: Optional[str] = None, kind: str = "market") -> str:
         r = Run()
         run_id = uuid.uuid4().hex[:12]
         with lock:
@@ -161,7 +187,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
                 if not runs[oldest].done:
                     break
                 runs.pop(oldest)
-        threading.Thread(target=execute, args=(r, run_id, budget, authorization_id), daemon=True).start()
+        threading.Thread(target=execute, args=(r, run_id, budget, authorization_id, kind), daemon=True).start()
         return run_id
 
     async def read_json(request: Request) -> dict:
@@ -190,6 +216,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
         lead, reviewer = make_brain()
         return {"ok": True, "lead": lead.label, "reviewer": reviewer.label,
                 "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes(),
+                "hunters": {h.card.id: f"{h.mode} ({h.tool})" for h in make_hunters().values()},
                 "payments": "PayPal sandbox" if paypal else "preview only (no PayPal keys)",
                 "funding": bool(funds and public_url)}
 
@@ -201,6 +228,14 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
         budget = _parse_budget((await read_json(request)).get("budget"))
         return {"run_id": start_run(budget)}
 
+    @app.post("/api/hunts")
+    async def create_hunt(request: Request):
+        """Start a deal bounty (unfunded: ends with a PayPal preview). Body: {"bounty"}."""
+        if not limiter.allow(client_key(request)):
+            raise HTTPException(429, "too many runs; wait a minute")
+        bounty = _parse_budget((await read_json(request)).get("bounty", str(shops.DEMO_WANT.bounty)))
+        return {"run_id": start_run(bounty, kind="hunt")}
+
     @app.post("/api/fund")
     async def fund(request: Request):
         """Start a PayPal-funded run: returns the sandbox approval link for the budget."""
@@ -211,15 +246,19 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
         client = client_key(request)
         if not limiter.allow(client):
             raise HTTPException(429, "too many runs; wait a minute")
-        budget = _parse_budget((await read_json(request)).get("budget"))
+        body = await read_json(request)
+        kind = "hunt" if body.get("kind") == "hunt" else "market"
+        amount = body.get("bounty", str(shops.DEMO_WANT.bounty)) if kind == "hunt" else body.get("budget")
+        budget = _parse_budget(amount)
         try:
-            _, url = funds.start(budget, public_url)
+            _, url = funds.start(budget, public_url, kind)
         except (PayPalError, funding.FundingError) as exc:
             raise HTTPException(502, f"PayPal: {exc}")
         return {"approve_url": url}
 
-    def back_home(error: str = "", run_id: str = "") -> RedirectResponse:
-        query = urllib.parse.urlencode({"run": run_id} if run_id else {"payment_error": error[:200]})
+    def back_home(error: str = "", run_id: str = "", kind: str = "market") -> RedirectResponse:
+        key = "hunt" if kind == "hunt" else "run"
+        query = urllib.parse.urlencode({key: run_id} if run_id else {"payment_error": error[:200]})
         return RedirectResponse(f"/?{query}", status_code=303)
 
     @app.get("/api/paypal/return", include_in_schema=False)
@@ -227,10 +266,10 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
         if funds is None:
             return back_home("PayPal is not configured")
         try:
-            budget, authorization_id = funds.complete(fund, token)
+            budget, authorization_id, kind = funds.complete(fund, token)
         except (PayPalError, funding.FundingError) as exc:
             return back_home(f"payment not authorized: {exc}")
-        return back_home(run_id=start_run(budget, authorization_id))
+        return back_home(run_id=start_run(budget, authorization_id, kind), kind=kind)
 
     @app.get("/api/paypal/cancel", include_in_schema=False)
     def paypal_cancel(fund: str = ""):

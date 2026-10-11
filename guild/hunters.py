@@ -188,4 +188,8 @@ def default_hunters(channel3=None, kernel=None, claude=None, fetch=None) -> dict
         (QuickFind, AgentCard("quickfind", "QuickFind", "quickfind@devs.example", {"hunt"}, 0.6, passes=1, fails=1),
          {"client": claude}),
     ]
+    from guild.funding import owners_from_env
+    owners = owners_from_env()  # where each agent's bounties are paid (PayPal sandbox accounts)
+    for _, card, _ in cards:
+        card.owner_email = owners.get(card.id, card.owner_email)
     return {card.id: cls(card, **kw) for cls, card, kw in cards}
