@@ -35,7 +35,7 @@ export default function App() {
       setStatus('live');
       es.onmessage = null;
       const onEvent = (msg: MessageEvent) => setEvents(prev => [...prev, JSON.parse(msg.data)]);
-      for (const t of ['plan', 'bids', 'awarded', 'work', 'settled', 'blocked', 'unfunded', 'done']) {
+      for (const t of ['plan', 'bids', 'awarded', 'work', 'settled', 'blocked', 'unfunded', 'done', 'error']) {
         es.addEventListener(t, onEvent as EventListener);
       }
       es.addEventListener('end', () => { es.close(); setStatus('done'); });

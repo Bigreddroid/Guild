@@ -21,8 +21,9 @@ class RuleReviewer:
         reasons = []
         if not isinstance(items, list):
             return {"verdict": "fail", "reasons": ["output has no item list"]}
-        if len(items) < checks.get("min_items", 1):
-            reasons.append(f"{len(items)} items, need at least {checks['min_items']}")
+        need = checks.get("min_items", 1)
+        if len(items) < need:
+            reasons.append(f"{len(items)} items, need at least {need}")
         for i, item in enumerate(items, 1):
             missing = [f for f in checks.get("required_fields", ()) if not item.get(f)]
             if missing:

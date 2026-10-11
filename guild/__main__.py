@@ -2,8 +2,8 @@
 from decimal import Decimal
 
 from guild.agents import default_agents
-from guild.lead import DEMO_GOAL, ScriptedLead
-from guild.review import RuleReviewer
+from guild.brain import default_brain
+from guild.lead import DEMO_GOAL
 from guild.run import run
 
 
@@ -28,4 +28,5 @@ def narrate(e):
 
 
 if __name__ == "__main__":
-    run(DEMO_GOAL, Decimal("3.00"), default_agents(), ScriptedLead(), RuleReviewer(), narrate)
+    lead, reviewer = default_brain()
+    run(DEMO_GOAL, Decimal("3.00"), default_agents(), lead, reviewer, narrate)

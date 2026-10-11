@@ -44,5 +44,9 @@ class ScriptedLead:
         return [job for job, _ in DEMO_JOBS]
 
     @staticmethod
+    def has_checks(job_id: str) -> bool:
+        return any(j.id == job_id for j, _ in DEMO_JOBS)
+
+    @staticmethod
     def checks(job_id: str) -> dict:
-        return dict(next(c for j, c in DEMO_JOBS if j.id == job_id))
+        return dict(next((c for j, c in DEMO_JOBS if j.id == job_id), {}))
