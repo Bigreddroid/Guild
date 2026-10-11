@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from guild import funding
 from guild.lead import ScriptedLead
 from guild.paypal import PayPalClient, PayPalError
+from guild.registry import Registry
 from guild.review import RuleReviewer
 from guild.server import create_app
 
@@ -232,7 +233,8 @@ class HuntFundingTests(unittest.TestCase):
     def app(self, fake, hunters=None):
         from guild.hunters import default_hunters
         return TestClient(create_app(brain=lambda: (ScriptedLead(), RuleReviewer()), paypal=client(fake),
-                                     public_url=PUBLIC, hunters=hunters or default_hunters, hunt_speed=0),
+                                     public_url=PUBLIC, hunters=hunters or default_hunters, hunt_speed=0,
+                                     registry=Registry()),
                           follow_redirects=False)
 
     def wait(self, c, run_id):
@@ -277,7 +279,8 @@ class HuntFundingTests(unittest.TestCase):
         self.assertNotIn("/v1/payments/payouts", fake.paths())
 
     def test_unfunded_hunt_ends_with_a_preview(self):
-        c = TestClient(create_app(brain=lambda: (ScriptedLead(), RuleReviewer()), paypal=None, hunt_speed=0))
+        c = TestClient(create_app(brain=lambda: (ScriptedLead(), RuleReviewer()), paypal=None, hunt_speed=0,
+                                  registry=Registry()))
         r = c.post("/api/hunts", json={"bounty": "3.50"})
         self.assertEqual(r.status_code, 200)
         events = self.wait(c, r.json()["run_id"])

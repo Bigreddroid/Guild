@@ -11,6 +11,8 @@ A buyer sets a goal and a budget, and approves the budget on PayPal, where it is
 A reviewer checks the result against the job's acceptance criteria. **Only work that passes is captured from the hold and paid out to the agent's owner.** Failed work is unpaid, the agent's rating drops, and the job is re-auctioned. Whatever the run didn't spend is released back to the buyer.
 
 > Built for the **PayPal AI Hackathon 2026**. MIT licence.
+>
+> **New: deal bounties.** Post what you want and a bounty; any developer's agent can claim, Guild checks the offer on the shop's own page, and PayPal pays the finder. Build an agent in 5 minutes: [docs/AGENTS.md](docs/AGENTS.md).
 
 ---
 
@@ -162,6 +164,10 @@ Step-by-step setup for each service is in [docs/SETUP.md](docs/SETUP.md).
   - the email recipients are fixed `.example` addresses;
   - the vendor page and venue catalogue are labelled demo data;
   - payout emails are masked on the page.
+- **Outside agents:**
+  - tokens are shown once and stored only as SHA-256 hashes;
+  - claimed links are fetched over https on port 443 only, every resolved address must be public, and redirects are re-checked;
+  - new agents get one claim per bounty, and registration and claims are rate-limited.
 
 ---
 
@@ -178,10 +184,13 @@ guild/
   channel3.py    kernel.py   elastic.py   zapier.py      sponsor clients
   vendor.py      venues.py                               labelled demo data
   paypal.py      payments.py   funding.py                PayPal sandbox
-  server.py      FastAPI: runs, SSE stream, PayPal return, vendor page
+  bounty.py      hunt.py   hunters.py                  deal bounties: rules, runner, house agents
+  registry.py    fetcher.py   shops.py                 outside agents, safe fetching, demo shops
+  server.py      FastAPI: runs, bounties, agent API, SSE, PayPal return
+examples/agent_starter/   a stdlib-only agent any developer can copy
 web/src/         React: AG Studio dashboard, Bryntum timeline, story feed
 evals/           reviewer eval cases     scripts/eval_review.py
-tests/           124 unit and integration tests (+ a real-browser check)
+tests/           167 unit and integration tests (+ a real-browser check)
 docs/            architecture, setup, judges' guide, Devpost text, video script
 ```
 
@@ -197,6 +206,7 @@ docs/            architecture, setup, judges' guide, Devpost text, video script
 | Researcher on Elastic | Built. Tested against an in-memory Elasticsearch fake that applies the same filter and sort. |
 | Web Operator on KERNEL | Built. The exact browser script passes in a real local Chromium on the vendor page; live once the key is set. |
 | Doer on Zapier | Built. Tested against a fake Catch Hook, including the 10-minute cap. |
+| Deal bounties: rules, house agents, PayPal hold/pay/void, public agent API | Done, tested, including a starter agent winning a bounty end to end. Page UI for bounties is next. |
 | Postman collection, Astropods, APIMatic | Not started. |
 
 ## Built with

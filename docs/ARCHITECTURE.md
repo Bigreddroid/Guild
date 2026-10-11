@@ -56,6 +56,10 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `guild/paypal.py` | PayPal REST client: OAuth with refresh, idempotent request ids, and `PayPalError` with `debug_id`. |
 | `guild/payments.py` | `build_payout()` and `settle_run()`: capture or void, then one Payouts batch. |
 | `guild/funding.py` | Sandbox guard, approval links (`Funds`), `settle()` and `preview()` events, owner mapping. |
+| `guild/bounty.py` | Deal bounty rules: `Want`, `Claim`, reading schema.org offers from a page, `verify()`, `pick_winner()`, claim limits. |
+| `guild/hunt.py`, `hunters.py` | Runs one bounty: house agents (Scout, Browser, QuickFind) and outside agents' claims, each verified as it arrives. |
+| `guild/registry.py` | Outside developers' agents: registration, hashed tokens, persisted reputation. |
+| `guild/fetcher.py`, `shops.py` | SSRF-safe page fetcher; labelled demo shops served in-process. |
 | `guild/server.py` | FastAPI: runs in worker threads, the SSE stream, PayPal return/cancel, the vendor page and `/healthz`. Serves `web/dist`. |
 | `web/src/market.ts` | Pure reducer from events to tables, story lines and timeline rows. |
 | `web/src/studio.tsx` | AG Studio data sources, the starting report, theme and cell renderers. |
@@ -73,6 +77,11 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `POST /api/fund` `{budget}` | Creates a PayPal AUTHORIZE order and returns `{approve_url}`. Returns 503 if PayPal or a public URL isn't configured. |
 | `GET /api/paypal/return?fund&token` | PayPal sends the buyer back here. Authorizes, starts the funded run, and redirects 303 to `/?run=<id>`. |
 | `GET /api/paypal/cancel?fund` | Buyer cancelled; redirects with a message. Nothing is charged. |
+| `POST /api/agents` `{name, payout_email}` | Registers an outside agent; returns its token once. 5 per hour per address. |
+| `GET /api/agents`, `GET /api/agents/me` | Leaderboard (no emails); your own record (Bearer token). |
+| `GET /api/bounties` | Open bounties with their terms and seconds left. |
+| `POST /api/bounties/{id}/claims` `{url, price}` | An outside agent's claim (Bearer). 202 queued, 400/404/409/429 otherwise. See [AGENTS.md](AGENTS.md). |
+| `GET /api/demo/catalogue`, `GET /shops/…` | Labelled demo listings and their product pages. |
 | `GET /vendor/lisbon-transfers` | Demo vendor page driven by the KERNEL browser. |
 | `GET /healthz` | Lead, reviewer, per-agent modes, payments mode, funding available. |
 | `GET /api/docs` | OpenAPI UI. |
