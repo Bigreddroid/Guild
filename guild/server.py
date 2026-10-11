@@ -1,12 +1,13 @@
 """HTTP API for the dashboard.
 
-    POST /api/runs                 run the market once; returns {"run_id", "events"}
-    GET  /api/runs/{id}/events     replay that run as server-sent events, step by step
+    POST /api/runs                 start a market run; returns {"run_id"}
+    GET  /api/runs/{id}            the run's events so far and whether it is done
+    GET  /api/runs/{id}/events     the run as server-sent events, live, step by step
     GET  /healthz                  liveness plus which parts are live or simulated
 
-A run is computed in full when it is created (it takes milliseconds in simulated
-mode) and the stream replays it with a short pause between steps, so the timeline
-and the dashboard fill in the way a judge can follow. The built web app in web/dist
+A run executes in a worker thread (the Claude reviewer takes seconds per job) and
+the stream sends each event as it happens, at least a short pause apart, so the
+timeline and the dashboard fill in at a pace a judge can follow. The built web app in web/dist
 is served from "/" when it exists.
 """
 from __future__ import annotations
@@ -26,14 +27,15 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from guild.agents import default_agents
-from guild.lead import DEMO_GOAL, ScriptedLead
-from guild.review import RuleReviewer
+from guild.lead import DEMO_GOAL
 from guild.run import run
 
 MAX_RUNS = 50                    # runs kept in memory for replay
 MAX_BUDGET = Decimal("10.00")    # sandbox demo cap
 DEFAULT_BUDGET = Decimal("3.00")
 STEP_DELAY_S = float(os.environ.get("GUILD_STEP_DELAY_S", "0.6"))
+MAX_CONCURRENT = 3              # runs executing at once (each may call Claude)
+STREAM_TIMEOUT_S = 300
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 
@@ -71,15 +73,44 @@ def _parse_budget(raw) -> Decimal:
     return budget.quantize(Decimal("0.01"))
 
 
-def create_app() -> FastAPI:
+class Run:
+    """One market run executing in a worker thread; events are appended as they happen."""
+
+    def __init__(self):
+        self.events: list = []
+        self.done = False
+        self.started = time.monotonic()
+
+    def emit(self, event: dict) -> None:
+        self.events.append(json.loads(json.dumps(event, default=str)))
+
+
+def create_app(brain=None) -> FastAPI:
+    """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set."""
+    from guild.brain import default_brain
+
+    make_brain = brain or default_brain
     app = FastAPI(title="Guild", docs_url="/api/docs", openapi_url="/api/openapi.json")
     runs: OrderedDict = OrderedDict()
     limiter = RateLimiter()
     lock = threading.Lock()
 
+    def running() -> int:
+        return sum(1 for r in runs.values() if not r.done)
+
+    def execute(r: Run, budget: Decimal) -> None:
+        try:
+            lead, reviewer = make_brain()
+            run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
+        except Exception as exc:  # report, never crash the server; no money moves on error
+            r.emit({"type": "error", "message": f"run failed: {type(exc).__name__}"})
+        finally:
+            r.done = True
+
     @app.get("/healthz")
     def healthz():
-        return {"ok": True, "lead": ScriptedLead.label, "reviewer": RuleReviewer.label,
+        lead, reviewer = make_brain()
+        return {"ok": True, "lead": lead.label, "reviewer": reviewer.label,
                 "agents": "simulated", "payments": "not connected"}
 
     @app.post("/api/runs")
@@ -99,29 +130,47 @@ def create_app() -> FastAPI:
             if not isinstance(body, dict):
                 raise HTTPException(400, "body must be a JSON object")
         budget = _parse_budget(body.get("budget"))
-        events: list = []
-        run(DEMO_GOAL, budget, default_agents(), ScriptedLead(), RuleReviewer(), events.append)
-        events = json.loads(json.dumps(events, default=str))
+        r = Run()
         run_id = uuid.uuid4().hex[:12]
         with lock:
-            runs[run_id] = events
+            if running() >= MAX_CONCURRENT:  # each run can spend AI calls
+                raise HTTPException(429, "the market is busy; try again in a few seconds")
+            runs[run_id] = r
             while len(runs) > MAX_RUNS:
-                runs.popitem(last=False)
-        return {"run_id": run_id, "events": events}
+                oldest = next(iter(runs))
+                if not runs[oldest].done:
+                    break
+                runs.pop(oldest)
+        threading.Thread(target=execute, args=(r, budget), daemon=True).start()
+        return {"run_id": run_id}
+
+    @app.get("/api/runs/{run_id}")
+    def get_run(run_id: str):
+        r = runs.get(run_id)
+        if r is None:
+            raise HTTPException(404, "unknown run")
+        return {"run_id": run_id, "done": r.done, "events": list(r.events)}
 
     @app.get("/api/runs/{run_id}/events")
     async def stream(run_id: str, delay: float = STEP_DELAY_S):
-        with lock:
-            events = runs.get(run_id)
-        if events is None:
+        r = runs.get(run_id)
+        if r is None:
             raise HTTPException(404, "unknown run")
         delay = min(max(delay, 0.0), 3.0)
 
         async def gen():
-            for i, event in enumerate(events):
-                yield f"id: {i}\nevent: {event['type']}\ndata: {json.dumps(event)}\n\n"
-                if delay:
-                    await asyncio.sleep(delay)
+            i, deadline = 0, time.monotonic() + STREAM_TIMEOUT_S
+            while time.monotonic() < deadline:
+                if i < len(r.events):
+                    event = r.events[i]
+                    yield f"id: {i}\nevent: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                    i += 1
+                    if delay:
+                        await asyncio.sleep(delay)
+                elif r.done:
+                    break
+                else:
+                    await asyncio.sleep(0.1)
             yield "event: end\ndata: {}\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream",

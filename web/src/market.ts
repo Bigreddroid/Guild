@@ -115,6 +115,10 @@ export function reduce(events: GuildEvent[], budget: number): MarketView {
         v.unfunded[e.job_id] = e.reason;
         v.story.push(`${e.job_id}: no affordable bid (${money(Number(e.remaining))} left).`);
         break;
+      case 'error':
+        v.done = true;
+        v.story.push(`Run stopped: ${e.message}. No money moved.`);
+        break;
       case 'done':
         v.done = true; v.spent = Number(e.spent);
         v.story.push(`Done: ${money(Number(e.spent))} of ${money(Number(e.budget))} spent; the rest goes back to the buyer.`);
