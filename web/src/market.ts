@@ -84,6 +84,7 @@ export function reduce(events: GuildEvent[], budget: number): MarketView {
       case 'work': {
         const a = [...v.attempts].reverse().find(x => x.job === e.job_id && x.agent === e.agent_id);
         if (a) { a.tool = e.tool; a.mode = e.mode; }
+        if (e.note) v.story.push(`${e.job_id}: ${e.note}.`);
         break;
       }
       case 'settled': {

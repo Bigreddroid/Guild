@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import sys
@@ -46,7 +48,8 @@ class RulesBaselineTests(unittest.TestCase):
     def test_main_exits_1_when_junk_is_paid_and_writes_json(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "r.json"
-            self.assertEqual(ev.main(["--rules", "--json", str(out)]), 1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ev.main(["--rules", "--json", str(out)]), 1)
             self.assertEqual(json.loads(out.read_text())["junk_paid"], 15)
 
 

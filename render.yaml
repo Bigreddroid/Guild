@@ -18,3 +18,5 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: CHANNEL3_API_KEY
+        sync: false
