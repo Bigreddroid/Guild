@@ -39,7 +39,8 @@ class ServerTests(unittest.TestCase):
     def test_healthz_says_what_is_simulated(self):
         body = self.c.get("/healthz").json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["agents"], "simulated")
+        self.assertEqual(body["prototype"]["agents"], "simulated")
+        self.assertTrue(all(v.startswith("simulated") for v in body["hunters"].values()))
 
     def test_run_returns_the_full_story(self):
         _, events = self.run_events(json={"budget": "3.00"})

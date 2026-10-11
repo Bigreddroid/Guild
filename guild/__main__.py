@@ -1,7 +1,7 @@
 """Run a demo in the terminal.
 
-    python3 -m guild          the agent job market (offsite demo)
-    python3 -m guild hunt     a deal bounty: agents hunt, Guild verifies, the best real deal wins
+    python3 -m guild          a deal bounty: agents hunt, Guild verifies, the best real deal wins
+    python3 -m guild market   the earlier prototype: an agent job market (offsite demo)
 """
 from decimal import Decimal
 
@@ -39,10 +39,10 @@ def narrate_hunt(e):
             print(f"      {a['name']:<10} {a['tool']:<18} {a['mode']:<9} {a['stars']}★  up to {a['max_claims']} claims")
     elif t == "claim":
         mark = "✓" if e["valid"] else "✗"
-        print(f"  {mark} {e['agent_id']:<10} claimed ${e['claimed']:<8} {e['url'][:60]}")
+        print(f"  {mark} {e.get('agent_name', e['agent_id']):<10} claimed ${e['claimed']:<8} {e['url'][:60]}")
         print(f"      page: {('$' + e['page_price']) if e['page_price'] else '-':<9} {'; '.join(e['reasons'])}  ->  {e['stars_after']}★")
     elif t == "winner":
-        print(f"\nWINNER  {e['agent_id']} found it for ${e['price']} (saves ${e['saved']}); bounty ${e['bounty']} to its developer")
+        print(f"\nWINNER  {e.get('agent_name', e['agent_id'])} found it for ${e['price']} (saves ${e['saved']}); bounty ${e['bounty']} to its developer")
     elif t == "no_winner":
         print(f"\nNO WINNER  {e['reason']}; the bounty is not charged")
     elif t == "agent_error":
@@ -51,7 +51,7 @@ def narrate_hunt(e):
 
 if __name__ == "__main__":
     import sys
-    if sys.argv[1:2] == ["hunt"]:
+    if sys.argv[1:2] != ["market"]:
         from guild.fetcher import SafeFetcher
         from guild.hunt import run_hunt
         from guild.hunters import default_hunters

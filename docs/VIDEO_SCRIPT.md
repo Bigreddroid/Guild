@@ -1,17 +1,22 @@
 # Demo video script (target 2:45, limit 3:00)
 
-Record at 1440×900 with the browser zoomed to 90%. Narrate over the live page; no slides except the opening and closing cards.
+Record at 1440×900 with the browser zoomed to 90%. Narrate over the live page; no slides except the opening and closing cards. Use a fresh deploy (ratings reset), so the first bounty tells the full story.
 
 | Time | Screen | Narration |
 |---|---|---|
-| 0:00–0:12 | Title card: "Guild: agents hire agents. PayPal pays only for work that passes." | "Agents can spend money now. Guild makes them earn it." |
-| 0:12–0:30 | Page. Goal "Plan my team offsite in Lisbon", budget $3. Click **Fund with PayPal (sandbox)**. | "I give Guild a goal and a three-dollar budget. PayPal holds the budget; nothing is charged yet." |
-| 0:30–0:45 | PayPal sandbox approval screen, then back to the page. | "I approve the hold. Now a lead agent splits the goal into five jobs, each with acceptance criteria." |
-| 0:45–1:10 | Bids table: CheapBot $0.10 wins supplies. The story line turns red: review failed. | "Agents bid. CheapBot is cheapest, so it wins the first job, and it delivers junk. The reviewer fails it. No pay, and its rating drops from 3.4 to 2.6 stars." |
-| 1:10–1:25 | Re-auction: Sourcer wins at $0.40. Hover a star rating. | "The job is re-auctioned. The market ranks bids by rating squared over price, so a reliable agent now beats the cheap one." |
-| 1:25–1:50 | Transport job: click **Watch live**. KERNEL browser fills the vendor form. | "Each agent uses a real tool. The Sourcer searches Channel3, the Researcher queries Elasticsearch, and this one drives a KERNEL cloud browser through a booking form." |
-| 1:50–2:10 | Gantt timeline (red bar, then green bars) and the dashboard's earnings chart. | "Everything streams into an AG Studio dashboard and a Bryntum timeline: who bid, who won, who passed, who got paid." |
-| 2:10–2:30 | Feed's last line: captured $2.00, released $1.00, payout batch id. | "At the end, Guild captures only what passed review: two dollars. PayPal releases the other dollar back to me, and one Payouts batch pays each agent's owner. CheapBot gets nothing." |
-| 2:30–2:45 | README eval table. Closing card. | "We tested the reviewer on 36 outputs, including agents that try to talk it into paying. Guild: pay agents for work, not for answers." |
+| 0:00–0:12 | Title card: "Guild: agents find the deal. Guild checks it. PayPal pays the finder." | "Shopping agents are easy to build and hard to trust. Guild pays them only for deals that are real." |
+| 0:12–0:30 | The want form: Sony WH-1000XM5, not refurbished, max $330, ship to US, bounty $2. Click **Post and fund with PayPal (sandbox)**. | "I want these headphones, new, under three-thirty, shipped to the US. I'll pay two dollars to whoever finds the deal. PayPal holds the two dollars; nothing is charged yet." |
+| 0:30–0:40 | PayPal sandbox approval, then back to the page. | "I approve the hold, and the bounty opens. Three agents start hunting, and any developer's agent can join through the API." |
+| 0:40–1:05 | The race feed: QuickFind's two red lines. Point to "page says 318.00". | "QuickFind is an AI answering from memory. It's instant, and it's wrong: a shop that doesn't exist, and a price the page doesn't show. Guild opens every link and reads the shop's own product data, so both claims fail, and QuickFind's rating drops." |
+| 1:05–1:25 | Scout's three red lines: refurbished, out of stock, doesn't ship to US. | "Scout trusts the product listings. The cheapest one is refurbished, the next is out of stock, the third won't ship to the US. Rejected, rejected, rejected." |
+| 1:25–1:45 | Browser's green line, then the green deal card: $299.00, $31 under max. | "Browser opens each page in a KERNEL cloud browser before it claims. Two ninety-nine at Harbor Audio, in stock, ships to the US. Guild verifies it, and it's the cheapest real deal." |
+| 1:45–2:05 | AG Studio dashboard (passed vs rejected), then the Bryntum timeline with green and red markers. | "Every claim lands in an AG Studio dashboard with the price the page really showed and why it failed. The Bryntum timeline shows the race second by second." |
+| 2:05–2:20 | The race's last lines: Elasticsearch, Zapier, PayPal capture and payout batch id. | "PayPal captures the two-dollar bounty and pays Browser's developer through Payouts. The deal goes into an Elasticsearch history, and Zapier sends me the alert. If nothing had verified, the hold would simply be voided." |
+| 2:20–2:38 | Terminal: `agent.py register`, then `run`. Post a bounty; "Sleuth (outside)" appears and the leaderboard updates. | "Any developer can plug in an agent: register with a PayPal email, take open bounties, claim. New agents get one claim per bounty, so they check before they claim." |
+| 2:38–2:50 | Closing card: repo URL, "Build an agent: docs/AGENTS.md". | "Guild: agents find it, code checks it, PayPal pays for it." |
 
-**Before recording:** set all keys on Render, run once to warm up (Elastic seeding, Zapier's 10-minute window), and use a fresh sandbox buyer session.
+**Before recording:**
+- Set all keys on Render.
+- Redeploy so ratings start fresh. Then open `/healthz` to wake the server, but don't post a bounty in the 10 minutes before recording: Zapier sends at most one alert per 10 minutes, and the recorded bounty should be the one that sends it.
+- Use a fresh sandbox buyer session.
+- Keep a registered starter agent ready in a terminal.
