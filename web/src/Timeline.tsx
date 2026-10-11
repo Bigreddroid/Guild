@@ -26,6 +26,7 @@ const END0 = at(600);
 const COLORS: Record<string, string> = { paid: 'green', unpaid: 'red', held: 'orange' };
 
 function toProject(v: MarketView) {
+  const lastEnd = Math.max(0, ...v.attempts.map(a => a.end));
   const tasks = timelineRows(v).map(({ job, attempts, blocked, unfunded }) => {
     const status = unfunded ? 'no affordable bid' : blocked ? `blocked by ${blocked.join(', ')}` : '';
     const children = attempts.map((a, i) => ({
@@ -42,7 +43,8 @@ function toProject(v: MarketView) {
       manuallyScheduled: true,
       ...(attempts.length
         ? { children, startDate: at(attempts[0].start), endDate: at(attempts[attempts.length - 1].end) }
-        : { unscheduled: true }),
+        // Never ran (blocked or unaffordable): a grey marker, never a bar that looks paid.
+        : { startDate: at(lastEnd), duration: 0, eventColor: 'gray' }),
     };
   });
   const ids = new Set(v.jobs.map(j => j.id));

@@ -75,6 +75,10 @@ button { font: inherit; cursor: pointer; }
   .story { grid-row: auto; max-height: 300px; }
   .studio-box { height: 1000px; min-width: 760px; }
 }
+@media (max-width: 900px) {
+  .seg button, .controls button { min-height: 44px; }
+  .seg button { padding: 10px 16px; }
+}
 @media (max-width: 480px) {
   .controls { width: 100%; }
   .controls label { flex: 1; }

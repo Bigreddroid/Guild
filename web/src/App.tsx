@@ -21,12 +21,21 @@ export default function App() {
   const view = useMemo(() => (events.length ? reduce(events, runBudget.current) : emptyView(Number(budget) || 0)),
     [events, budget]);
 
-  const attach = useCallback((runId: string) => {
+  const attach = useCallback((runId: string, runBudgetValue?: number) => {
     source.current?.close();
     const es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     source.current = es;
     setStatus('live');
-    const onEvent = (msg: MessageEvent) => setEvents(prev => [...prev, JSON.parse(msg.data)]);
+    // The previous run stays on screen until this run's first event arrives, so the
+    // dashboard never sits empty (AG Studio errors when emptied data is refilled).
+    let first = true;
+    const onEvent = (msg: MessageEvent) => {
+      const event = JSON.parse(msg.data);
+      const replace = first;  // read now: React may run the updater after `first` flips
+      first = false;
+      if (replace && runBudgetValue !== undefined) runBudget.current = runBudgetValue;
+      setEvents(prev => (replace ? [event] : [...prev, event]));
+    };
     for (const t of ['plan', 'bids', 'awarded', 'work', 'settled', 'blocked', 'unfunded', 'done', 'error', 'payment']) {
       es.addEventListener(t, onEvent as EventListener);
     }
@@ -44,11 +53,10 @@ export default function App() {
   };
 
   const start = useCallback(async () => {
-    setStatus('starting'); setError(''); setEvents([]);
+    setStatus('starting'); setError('');
     try {
       const body = await post('/api/runs');
-      runBudget.current = Number(budget);
-      attach(body.run_id);
+      attach(body.run_id, Number(budget));
     } catch (e) {
       setStatus('error'); setError(e instanceof Error ? e.message : String(e));
     }
@@ -145,7 +153,7 @@ export default function App() {
 
         <section className="panel timeline" aria-label="Job timeline">
           <h2>Job timeline <span className="by">Bryntum Gantt</span></h2>
-          <p className="muted small">Minutes of agent work. Green = paid, red = failed review (unpaid), blue = working.</p>
+          <p className="muted small">Minutes of agent work. Green = paid, red = failed review (unpaid), blue = working, grey = never ran.</p>
           <div className="gantt-box"><Suspense fallback={<Loading what="the Bryntum timeline" />}><Timeline view={view} /></Suspense></div>
         </section>
       </main>
