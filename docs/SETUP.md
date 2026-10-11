@@ -14,8 +14,8 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
 1. Go to [developer.paypal.com](https://developer.paypal.com) → **Apps & Credentials**, and make sure the toggle is on **Sandbox**.
 2. Create an app (or use the default one). Copy its **Client ID** and **Secret** into Render as `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`.
 3. In the app's features, turn on **Payouts**.
-4. Under **Testing Tools → Sandbox Accounts**, create **4 Personal accounts**, one per agent owner. Then set:
-   `GUILD_AGENT_OWNERS=sourcer=<email1>,researcher=<email2>,web_operator=<email3>,doer=<email4>`
+4. Under **Testing Tools → Sandbox Accounts**, create a **Personal account** per agent owner (agents may share one). Leave out any agent you don't need. Then set:
+   `GUILD_AGENT_OWNERS=scout=<email1>,browser=<email2>,quickfind=<email3>,sourcer=<email4>,researcher=<email5>,web_operator=<email6>,doer=<email7>`
 5. Note one sandbox **Personal** account as the **buyer** for judges. Its login goes in the Devpost "test credentials" field, not in this repo.
 6. `/healthz` should now show `"payments": "PayPal sandbox", "funding": true`, and the page shows **Fund with PayPal (sandbox)**.
 

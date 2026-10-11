@@ -33,8 +33,9 @@ from starlette.middleware.gzip import GZipMiddleware
 from guild import funding, shops, vendor
 from guild.agents import agent_modes, default_agents
 from guild.fetcher import SafeFetcher
-from guild.hunt import run_hunt
+from guild.hunt import OpenHunt, run_hunt
 from guild.hunters import default_hunters
+from guild.registry import Registry, RegistryError, default_registry
 from guild.lead import DEMO_GOAL
 from guild.paypal import PayPalError
 from guild.run import run
@@ -128,13 +129,18 @@ def default_hunters_from_env() -> dict:
 
 
 def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hunters=None,
-               hunt_speed: float = HUNT_SPEED) -> FastAPI:
+               hunt_speed: float = HUNT_SPEED, registry: Optional[Registry] = None,
+               hunt_deadline_s: float = HUNT_DEADLINE_S) -> FastAPI:
     """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
     `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
 
     make_brain = brain or default_brain
     make_hunters = hunters or default_hunters_from_env
+    agents_registry = registry if registry is not None else default_registry()
+    open_hunts: dict = {}       # run id -> {"door", "want", "opened"}
+    signup_limiter = RateLimiter(limit=5, window_s=3600)
+    claim_limiter = RateLimiter(limit=60, window_s=60)
     hunt_fetch = SafeFetcher(local=shops.serve)
     paypal = funding.paypal_from_env() if paypal is _NOT_SET else paypal
     public_url = public_url if public_url is not None else funding.public_base_url()
@@ -152,8 +158,15 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
             if kind == "hunt":
                 # The budget is the bounty: held on PayPal, paid in full to the winner's developer.
                 want = dataclasses.replace(shops.DEMO_WANT, bounty=budget)
-                result = run_hunt(want, make_hunters(), hunt_fetch, r.emit, deadline_s=HUNT_DEADLINE_S,
-                                  speed=hunt_speed)
+                door = OpenHunt()
+                open_hunts[run_id] = {"door": door, "want": want, "opened": time.monotonic()}
+                try:
+                    # With outside agents registered, the bounty stays open for its whole window.
+                    result = run_hunt(want, make_hunters(), hunt_fetch, r.emit, deadline_s=hunt_deadline_s,
+                                      speed=hunt_speed, door=door, close_early=len(agents_registry) == 0)
+                finally:
+                    open_hunts.pop(run_id, None)
+                    agents_registry.save()  # outside agents' reputation persists
             else:
                 lead, reviewer = make_brain()
                 result = run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
@@ -203,6 +216,82 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         if not isinstance(body, dict):
             raise HTTPException(400, "body must be a JSON object")
         return body
+
+    # ---------------------------------------------------------------- outside agents
+
+    def bearer(request: Request):
+        auth = request.headers.get("authorization", "")
+        card = agents_registry.authenticate(auth[7:].strip() if auth.lower().startswith("bearer ") else "")
+        if card is None:
+            raise HTTPException(401, "missing or unknown agent token")
+        return card
+
+    @app.post("/api/agents", status_code=201)
+    async def register_agent(request: Request):
+        """Register an outside agent. The token is shown once; keep it secret."""
+        if not signup_limiter.allow(client_key(request)):
+            raise HTTPException(429, "too many registrations from this address; try later")
+        body = await read_json(request)
+        try:
+            agent_id, token = agents_registry.register(str(body.get("name", "")), str(body.get("payout_email", "")),
+                                                       str(body.get("description", "")))
+        except RegistryError as exc:
+            raise HTTPException(400, str(exc))
+        return {"agent_id": agent_id, "token": token,
+                "note": "Store this token now; Guild keeps only its hash. Send it as 'Authorization: Bearer <token>'."}
+
+    @app.get("/api/agents")
+    def list_agents():
+        return {"agents": agents_registry.leaderboard()}
+
+    @app.get("/api/agents/me")
+    def me(request: Request):
+        return agents_registry.public(bearer(request).id)
+
+    @app.get("/api/bounties")
+    def open_bounties():
+        now = time.monotonic()
+        out = []
+        for hunt_id, h in list(open_hunts.items()):
+            w = h["want"]
+            left = hunt_deadline_s - (now - h["opened"])
+            if left > 0 and not h["door"].closed.is_set():
+                out.append({"id": hunt_id, "title": w.title, "must_have": list(w.must_have),
+                            "must_not": list(w.must_not), "max_price": str(w.max_price), "currency": w.currency,
+                            "ship_to": w.ship_to, "bounty": str(w.bounty), "seconds_left": round(left, 1)})
+        return {"bounties": out}
+
+    @app.post("/api/bounties/{hunt_id}/claims", status_code=202)
+    async def submit_claim(hunt_id: str, request: Request):
+        card = bearer(request)
+        if not claim_limiter.allow(card.id):
+            raise HTTPException(429, "too many claims; slow down")
+        hunt = open_hunts.get(hunt_id)
+        if hunt is None:
+            raise HTTPException(404, "no open bounty with that id")
+        body = await read_json(request)
+        url, price = body.get("url"), body.get("price")
+        if not isinstance(url, str) or not url.startswith("https://") or len(url) > 500:
+            raise HTTPException(400, "url must be an https URL (max 500 chars)")
+        if not isinstance(price, (str, int, float)) or len(str(price)) > 20:
+            raise HTTPException(400, "price must be a number or a numeric string")
+        if not hunt["door"].submit(card, {"url": url, "price": str(price)}):
+            raise HTTPException(409, "this bounty has closed")
+        return {"accepted": True, "note": "verified within seconds; watch the bounty's event stream for the result"}
+
+    @app.get("/api/demo/catalogue")
+    def demo_catalogue():
+        """Guild's labelled demo shops, for outside agents testing without a search API.
+        Listed prices may be stale: read the page before you claim."""
+        return {"demo": True, "listings": [{**item, "page": "/shops/" + item["url"].split("/", 3)[3]}
+                                            for item in shops.catalogue()]}
+
+    @app.get("/shops/{slug:path}", include_in_schema=False)
+    def demo_shop_page(slug: str):
+        body = shops.page(slug)
+        if body is None:
+            raise HTTPException(404, "no such demo product")
+        return HTMLResponse(body)
 
     @app.get(vendor.PATH, include_in_schema=False)
     def vendor_page(passengers: Optional[str] = None, date: Optional[str] = None):
