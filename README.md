@@ -63,6 +63,7 @@ Without keys everything runs offline, and the page and API say which parts are s
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude reviewer. The Claude lead is built for custom goals but not exposed yet: simulated agents only know the demo goal. |
 | `CHANNEL3_API_KEY` | Sourcer agent searches real products on Channel3 (cheapest in-stock US offer with an https link). If a call fails, the run continues on sample data and the event says so. |
+| `ELASTIC_URL`, `ELASTIC_API_KEY` | Researcher indexes Guild's demo venue catalogue ([`guild/venues.py`](guild/venues.py), invented venues) into Elasticsearch and shortlists the 3 cheapest in Lisbon that seat 6+. Use the Elasticsearch endpoint URL (https) and an API key from Elastic Cloud. |
 | `KERNEL_API_KEY` | Web Operator opens a real KERNEL cloud browser, fills in Guild's demo vendor page ([`/vendor/lisbon-transfers`](guild/vendor.py), clearly labelled, nothing booked) and reads the quotes. The page shows a "Watch live" link while it works. Needs a public https URL for the vendor page; Render's `RENDER_EXTERNAL_URL` is used automatically. |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | PayPal **sandbox** client (authorize, capture, payouts). Built and tested, not yet wired into market runs. |
 
@@ -71,6 +72,7 @@ Without keys everything runs offline, and the page and API say which parts are s
 - **AI:** Claude (lead, reviewer) via the Anthropic API with structured outputs. Built with Claude Code.
 - **Payments:** PayPal Orders v2 (authorize, partial capture) and Payouts v1, sandbox only.
 - **Product search:** Channel3 (`POST /v1/search`) for the Sourcer agent.
+- **Search:** Elasticsearch (index, bulk load, bool filter + sort) for the Researcher, over Guild's demo venue catalogue.
 - **Cloud browser:** KERNEL (`/browsers`, Playwright run on KERNEL's side) for the Web Operator, on Guild's own demo vendor page.
 - **Dashboard:** AG Studio (AG Grid + AG Charts).
 - **Timeline:** Bryntum Gantt.
@@ -85,7 +87,8 @@ Without keys everything runs offline, and the page and API say which parts are s
 | Dashboard and timeline | done |
 | Sourcer agent on Channel3 | built; tested against a mock of the API the official SDK calls; live once the key is set |
 | Web Operator on KERNEL | built; API calls tested against a mock of the official SDK's endpoints; the exact browser script passes in a real local Chromium on the vendor page; live once the key is set |
-| Specialist agents (Elastic, Zapier) | simulated, labelled |
+| Researcher on Elastic | built; tested against an in-memory Elasticsearch fake that applies the same filter and sort; live once the URL and key are set |
+| Doer on Zapier | simulated, labelled |
 | PayPal sandbox capture and payouts | client built and tested; live run pending keys |
 
 MIT licence.

@@ -2,7 +2,7 @@
 work with a sponsor tool:
 
     sourcer       Channel3 product search
-    researcher    Elastic search over venue and job documents
+    researcher    Elasticsearch over Guild's demo venue catalogue
     web_operator  KERNEL cloud browser on Guild's demo vendor page
     doer          Zapier actions (email, calendar)
     cheapbot      a deliberately careless agent, so the demo shows unpaid bad work
@@ -83,7 +83,27 @@ class Sourcer(Agent):
 
 
 class Researcher(Agent):
+    """Shortlists venues from Guild's demo catalogue indexed in Elasticsearch."""
     tool, price, eta_s = "Elastic", D("0.50"), 90
+
+    # What each demo job searches for: (city, minimum seats).
+    SEARCHES = {"venue": ("lisbon", 6)}
+
+    def __init__(self, card: AgentCard, elastic=None):
+        super().__init__(card)
+        self.elastic = elastic
+
+    def work(self, job: Job) -> dict:
+        if self.elastic is None or job.id not in self.SEARCHES:
+            return super().work(job)
+        try:
+            self.elastic.seed()
+            city, seats = self.SEARCHES[job.id]
+            return {"mode": "live", "tool": self.tool, "items": self.elastic.shortlist(city, seats, size=3)}
+        except Exception as exc:  # never crash a run; say plainly that this is sample data
+            out = super().work(job)
+            out["note"] = f"Elastic unavailable ({exc}); sample data"
+            return out
 
     def sample(self, job):
         return [{"name": "LX Factory Loft", "capacity": 12, "price_per_day": "420"},
@@ -165,7 +185,7 @@ class CheapBot(Agent):
         return [{"title": "notebook"}]
 
 
-def default_agents(channel3=None, kernel=None, vendor_url=None) -> dict:
+def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None) -> dict:
     """The demo roster. The Sourcer searches Channel3 live when given a client
     (default: from CHANNEL3_API_KEY), otherwise it returns labelled sample data."""
     if channel3 is None:
@@ -179,6 +199,9 @@ def default_agents(channel3=None, kernel=None, vendor_url=None) -> dict:
     ]
     agents = {card.id: cls(card) for cls, card in cards}
     agents["sourcer"].channel3 = channel3
+    if elastic is None:
+        elastic = _env_elastic(os.environ.get("ELASTIC_URL", ""), os.environ.get("ELASTIC_API_KEY", ""))
+    agents["researcher"].elastic = elastic
     if kernel is None:
         kernel = _env_kernel(os.environ.get("KERNEL_API_KEY", ""))
     agents["web_operator"].kernel = kernel
@@ -192,6 +215,12 @@ def public_vendor_url() -> str:
     from guild.vendor import PATH
     base = os.environ.get("GUILD_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
     return base.rstrip("/") + PATH if base.startswith("https://") else ""
+
+
+@functools.lru_cache(maxsize=2)
+def _env_elastic(url: str, key: str):
+    from guild.elastic import Elastic
+    return Elastic(url, key) if url.startswith("https://") and key else None
 
 
 @functools.lru_cache(maxsize=2)
@@ -210,6 +239,7 @@ def _env_channel3(key: str):
 def agent_modes() -> dict:
     """Which agents use their real tool right now (for /healthz and the page)."""
     return {"sourcer": "live (Channel3)" if os.environ.get("CHANNEL3_API_KEY") else "simulated",
-            "researcher": "simulated",
+            "researcher": "live (Elastic)" if os.environ.get("ELASTIC_URL", "").startswith("https://")
+            and os.environ.get("ELASTIC_API_KEY") else "simulated",
             "web_operator": "live (KERNEL)" if os.environ.get("KERNEL_API_KEY") and public_vendor_url() else "simulated",
             "doer": "simulated"}
