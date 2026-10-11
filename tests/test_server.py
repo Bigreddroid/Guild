@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from guild.lead import ScriptedLead
 from guild.review import RuleReviewer
-from guild.server import RateLimiter, create_app
+from guild.server import RateLimiter, client_key, create_app
 
 
 def offline():
@@ -115,6 +115,18 @@ class ServerTests(unittest.TestCase):
         codes = [c.post("/api/runs").status_code for _ in range(4)]
         gate.set()
         self.assertEqual(codes, [200, 200, 200, 429])
+
+
+class ClientKeyTests(unittest.TestCase):
+    def test_uses_the_address_the_proxy_appended(self):
+        from starlette.requests import Request as R
+        def req(xff=None):
+            headers = [(b"x-forwarded-for", xff.encode())] if xff else []
+            return R({"type": "http", "headers": headers, "client": ("10.0.0.1", 1234)})
+        self.assertEqual(client_key(req()), "10.0.0.1")
+        self.assertEqual(client_key(req("203.0.113.9")), "203.0.113.9")
+        # a visitor can prepend fake addresses, but Render appends the real one last
+        self.assertEqual(client_key(req("1.2.3.4, 203.0.113.9")), "203.0.113.9")
 
 
 class RateLimiterTests(unittest.TestCase):

@@ -27,6 +27,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from guild import funding, vendor
 from guild.agents import agent_modes, default_agents
@@ -63,6 +64,18 @@ class RateLimiter:
             if len(self._hits) > 10_000:  # forget stale clients
                 self._hits = {k: v for k, v in self._hits.items() if now - v[0] < self.window_s}
             return True
+
+
+def client_key(request: Request) -> str:
+    """The visitor's IP for rate limiting. Behind Render's proxy every request comes
+    from the proxy, so use the last X-Forwarded-For entry: the proxy appends the
+    address it saw, and a visitor can only prepend fake ones."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        last = forwarded.split(",")[-1].strip()
+        if last:
+            return last[:64]
+    return request.client.host if request.client else "unknown"
 
 
 def _parse_budget(raw) -> Decimal:
@@ -182,7 +195,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
 
     @app.post("/api/runs")
     async def create_run(request: Request):
-        client = request.client.host if request.client else "unknown"
+        client = client_key(request)
         if not limiter.allow(client):
             raise HTTPException(429, "too many runs; wait a minute")
         budget = _parse_budget((await read_json(request)).get("budget"))
@@ -195,7 +208,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
             raise HTTPException(503, "PayPal sandbox is not configured on this server")
         if not public_url:
             raise HTTPException(503, "no public https URL for PayPal to return to")
-        client = request.client.host if request.client else "unknown"
+        client = client_key(request)
         if not limiter.allow(client):
             raise HTTPException(429, "too many runs; wait a minute")
         budget = _parse_budget((await read_json(request)).get("budget"))
@@ -258,7 +271,9 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) ->
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     if (WEB_DIST / "index.html").exists():
-        app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+        # Gzip only the static bundle (the event stream must not be buffered).
+        app.mount("/assets", GZipMiddleware(StaticFiles(directory=WEB_DIST / "assets"), minimum_size=1024),
+                  name="assets")
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str):

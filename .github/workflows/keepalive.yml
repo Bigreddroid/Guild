@@ -1,0 +1,17 @@
+name: keep-warm
+# Render's free tier sleeps after 15 idle minutes, and waking takes ~50 s.
+# Set the repository variable GUILD_URL (Settings -> Secrets and variables ->
+# Actions -> Variables) to the Render URL to ping /healthz every 10 minutes
+# during judging. Without the variable this workflow does nothing.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ping:
+    if: ${{ vars.GUILD_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -fsS --max-time 90 "${{ vars.GUILD_URL }}/healthz" > /dev/null
