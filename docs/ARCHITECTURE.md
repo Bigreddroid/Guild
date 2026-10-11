@@ -68,6 +68,8 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `POST /api/runs` `{budget}` | Starts an unfunded run and returns `{run_id}`. Budget must be above $0 and at most $10. Rate-limited, with at most 3 runs at once. |
 | `GET /api/runs/{id}` | The events so far and `done`. |
 | `GET /api/runs/{id}/events` | Server-sent events, one per step, then `end`. |
+| `POST /api/hunts` `{bounty}` | Starts a deal bounty (unfunded; ends with a PayPal preview). Returns `{run_id}`; stream it like a run. |
+| `POST /api/fund` `{kind: "hunt", bounty}` | PayPal approval link for a bounty. On return, the page gets `/?hunt=<id>`. |
 | `POST /api/fund` `{budget}` | Creates a PayPal AUTHORIZE order and returns `{approve_url}`. Returns 503 if PayPal or a public URL isn't configured. |
 | `GET /api/paypal/return?fund&token` | PayPal sends the buyer back here. Authorizes, starts the funded run, and redirects 303 to `/?run=<id>`. |
 | `GET /api/paypal/cancel?fund` | Buyer cancelled; redirects with a message. Nothing is charged. |

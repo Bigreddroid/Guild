@@ -226,5 +226,67 @@ class FundedRunTests(unittest.TestCase):
         self.assertTrue(self.app(FakePayPal()).get("/healthz").json()["funding"])
 
 
+class HuntFundingTests(unittest.TestCase):
+    """Deal bounties: the bounty is held, paid in full to the winning agent's developer, or voided."""
+
+    def app(self, fake, hunters=None):
+        from guild.hunters import default_hunters
+        return TestClient(create_app(brain=lambda: (ScriptedLead(), RuleReviewer()), paypal=client(fake),
+                                     public_url=PUBLIC, hunters=hunters or default_hunters, hunt_speed=0),
+                          follow_redirects=False)
+
+    def wait(self, c, run_id):
+        for _ in range(300):
+            body = c.get(f"/api/runs/{run_id}").json()
+            if body["done"]:
+                return body["events"]
+            time.sleep(0.02)
+        self.fail("hunt did not finish")
+
+    def fund(self, c, fake, bounty="2.00"):
+        r = c.post("/api/fund", json={"kind": "hunt", "bounty": bounty})
+        self.assertEqual(r.status_code, 200, r.text)
+        order = fake.calls[1][3]
+        self.assertEqual(order["purchase_units"][0]["amount"]["value"], bounty)
+        ctx = order["payment_source"]["paypal"]["experience_context"]
+        fund_id = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx["return_url"]).query)["fund"][0]
+        r = c.get("/api/paypal/return", params={"fund": fund_id, "token": "ORDER1"})
+        self.assertEqual(r.status_code, 303)
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(r.headers["location"]).query)
+        self.assertIn("hunt", q)  # the page knows to show a hunt
+        return self.wait(c, q["hunt"][0])
+
+    def test_winner_gets_the_whole_bounty(self):
+        fake = FakePayPal()
+        with Env(GUILD_AGENT_OWNERS="browser=dev-browser@buyer.example"):
+            events = self.fund(self.app(fake), fake)
+        win = next(e for e in events if e["type"] == "winner")
+        pay = events[-1]
+        self.assertEqual((win["agent_id"], pay["mode"], pay["captured"], pay["released"]), ("browser", "sandbox", "2.00", "0.00"))
+        payout = next(d for _, p, _, d in fake.calls if p == "/v1/payments/payouts")
+        self.assertEqual([(i["receiver"], i["amount"]["value"]) for i in payout["items"]], [("dev-browser@buyer.example", "2.00")])
+
+    def test_no_real_deal_means_the_hold_is_voided(self):
+        from guild.hunters import default_hunters
+        fake = FakePayPal()
+        only_quickfind = lambda: {"quickfind": default_hunters()["quickfind"]}
+        events = self.fund(self.app(fake, hunters=only_quickfind), fake)
+        self.assertTrue(any(e["type"] == "no_winner" for e in events))
+        self.assertTrue(events[-1]["voided"])
+        self.assertEqual(fake.paths()[-1], "/v2/payments/authorizations/AUTH1/void")
+        self.assertNotIn("/v1/payments/payouts", fake.paths())
+
+    def test_unfunded_hunt_ends_with_a_preview(self):
+        c = TestClient(create_app(brain=lambda: (ScriptedLead(), RuleReviewer()), paypal=None, hunt_speed=0))
+        r = c.post("/api/hunts", json={"bounty": "3.50"})
+        self.assertEqual(r.status_code, 200)
+        events = self.wait(c, r.json()["run_id"])
+        types = [e["type"] for e in events]
+        self.assertEqual((types[0], types[-2], types[-1]), ("want", "done", "payment"))
+        self.assertEqual((events[-1]["mode"], events[-1]["captured"]), ("preview", "3.50"))
+        self.assertEqual(c.post("/api/hunts", json={"bounty": "99"}).status_code, 400)
+        self.assertIn("scout", c.get("/healthz").json()["hunters"])
+
+
 if __name__ == "__main__":
     unittest.main()
