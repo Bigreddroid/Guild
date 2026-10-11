@@ -62,7 +62,7 @@ Without keys everything runs offline, and the page and API say which parts are s
 | Env var | Turns on |
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude reviewer. The Claude lead is built for custom goals but not exposed yet: simulated agents only know the demo goal. |
-| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | PayPal **sandbox** authorize, capture and payouts |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | PayPal **sandbox** client (authorize, capture, payouts). Built and tested, not yet wired into market runs. |
 
 ## Built with
 
