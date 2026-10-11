@@ -38,7 +38,8 @@ def run(goal: str, budget: Decimal, agents: dict, lead, reviewer, emit) -> dict:
             emit({"type": "awarded", "job_id": job.id, "agent_id": winner.agent_id, "price": str(winner.price)})
             output = agents[winner.agent_id].work(job)
             emit({"type": "work", "job_id": job.id, "agent_id": winner.agent_id,
-                  "mode": output.get("mode", "live"), "tool": output.get("tool", ""), "items": output.get("items")})
+                  "mode": output.get("mode", "live"), "tool": output.get("tool", ""), "items": output.get("items"),
+                  **({"note": output["note"]} if output.get("note") else {})})
             try:
                 review = reviewer.review(job, output)
                 verdict = review.get("verdict")

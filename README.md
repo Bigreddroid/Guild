@@ -62,12 +62,14 @@ Without keys everything runs offline, and the page and API say which parts are s
 | Env var | Turns on |
 |---|---|
 | `ANTHROPIC_API_KEY` | Claude reviewer. The Claude lead is built for custom goals but not exposed yet: simulated agents only know the demo goal. |
+| `CHANNEL3_API_KEY` | Sourcer agent searches real products on Channel3 (cheapest in-stock US offer with an https link). If a call fails, the run continues on sample data and the event says so. |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | PayPal **sandbox** client (authorize, capture, payouts). Built and tested, not yet wired into market runs. |
 
 ## Built with
 
 - **AI:** Claude (lead, reviewer) via the Anthropic API with structured outputs. Built with Claude Code.
 - **Payments:** PayPal Orders v2 (authorize, partial capture) and Payouts v1, sandbox only.
+- **Product search:** Channel3 (`POST /v1/search`) for the Sourcer agent.
 - **Dashboard:** AG Studio (AG Grid + AG Charts).
 - **Timeline:** Bryntum Gantt.
 - **Backend:** FastAPI with server-sent events. **Hosting:** Render.
@@ -79,7 +81,8 @@ Without keys everything runs offline, and the page and API say which parts are s
 | Market, auction, reputation, settlement | done, tested |
 | Claude reviewer and lead | done, tested against the SDK with a mock server; live numbers pending a key |
 | Dashboard and timeline | done |
-| Specialist agents (Channel3, Elastic, KERNEL, Zapier) | simulated, labelled |
+| Sourcer agent on Channel3 | built; tested against a mock of the API the official SDK calls; live once the key is set |
+| Specialist agents (Elastic, KERNEL, Zapier) | simulated, labelled |
 | PayPal sandbox capture and payouts | client built and tested; live run pending keys |
 
 MIT licence.

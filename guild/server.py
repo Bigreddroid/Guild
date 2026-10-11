@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from guild.agents import default_agents
+from guild.agents import agent_modes, default_agents
 from guild.lead import DEMO_GOAL
 from guild.run import run
 
@@ -73,6 +73,11 @@ def _parse_budget(raw) -> Decimal:
     return budget.quantize(Decimal("0.01"))
 
 
+def _agents_summary(modes: dict) -> str:
+    live = [f"{k} {v}" for k, v in modes.items() if v != "simulated"]
+    return "; ".join(live + ["others simulated"]) if live else "simulated"
+
+
 class Run:
     """One market run executing in a worker thread; events are appended as they happen."""
 
@@ -111,7 +116,8 @@ def create_app(brain=None) -> FastAPI:
     def healthz():
         lead, reviewer = make_brain()
         return {"ok": True, "lead": lead.label, "reviewer": reviewer.label,
-                "agents": "simulated", "payments": "not connected"}
+                "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes(),
+                "payments": "not connected"}
 
     @app.post("/api/runs")
     async def create_run(request: Request):
