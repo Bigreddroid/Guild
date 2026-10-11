@@ -224,6 +224,9 @@ def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None, za
         (Doer, AgentCard("doer", "Doer", "doer@owners.example", {"email"}, 0.95, passes=20)),
         (CheapBot, AgentCard("cheapbot", "CheapBot", "cheap@owners.example", {"source", "research", "browse"}, 0.6)),
     ]
+    from guild.funding import owners_from_env
+    for _, card in cards:  # where each agent's earnings go (PayPal sandbox accounts)
+        card.owner_email = owners_from_env().get(card.id, card.owner_email)
     agents = {card.id: cls(card) for cls, card in cards}
     agents["sourcer"].channel3 = channel3
     agents["doer"].zapier = zapier if zapier is not None else _env_zapier(os.environ.get("ZAPIER_HOOK_URL", ""))
@@ -240,9 +243,10 @@ def default_agents(channel3=None, kernel=None, vendor_url=None, elastic=None, za
 def public_vendor_url() -> str:
     """The demo vendor page as the cloud browser must reach it. Render sets
     RENDER_EXTERNAL_URL; a cloud browser can't reach localhost, so no URL, no live run."""
+    from guild.funding import public_base_url
     from guild.vendor import PATH
-    base = os.environ.get("GUILD_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
-    return base.rstrip("/") + PATH if base.startswith("https://") else ""
+    base = public_base_url()
+    return base + PATH if base else ""
 
 
 @functools.lru_cache(maxsize=2)

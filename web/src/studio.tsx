@@ -39,9 +39,10 @@ export function studioData(v: MarketView) {
       },
       {
         id: 'budget', name: 'Budget', description: 'The buyer budget held on PayPal and how much was spent.',
-        data: [{ budget: v.budget, spent: v.spent, remaining: +(v.budget - v.spent).toFixed(2) }],
+        data: [{ budget: v.budget, spent: v.spent, remaining: +(v.budget - v.spent).toFixed(2),
+                 mode: v.payment ? String(v.payment.mode) : 'pending' }],
         fields: [f('budget', 'currencyFormat', 'Budget'), f('spent', 'currencyFormat', 'Spent'),
-                 f('remaining', 'currencyFormat', 'Released to buyer')],
+                 f('remaining', 'currencyFormat', 'Released to buyer'), f('mode', 'textFormat', 'PayPal mode')],
       },
     ],
   };

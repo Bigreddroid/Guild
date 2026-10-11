@@ -16,6 +16,8 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
+      - key: GUILD_AGENT_OWNERS
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: CHANNEL3_API_KEY
