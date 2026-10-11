@@ -1,48 +1,52 @@
-// AG Studio set-up for the market dashboard: data sources, the starting report
-// (pages and widgets), the Guild theme, and a star-rating cell renderer.
+// AG Studio set-up for the bounty dashboard: data sources, the starting report
+// (pages and widgets), the Guild theme, and star-rating and result cell renderers.
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import { createWidgets } from 'ag-studio-react';
 import { studioTheme } from 'ag-studio';
-import type { MarketView } from './market';
+import type { HuntView } from './hunt';
 
 const USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const f = (id: string, format: string, name?: string) => ({
   id, format, ...(name ? { name } : {}), ...(format === 'currencyFormat' ? { formatOptions: { format: USD } } : {}),
 });
 
-export function studioData(v: MarketView) {
+export function studioData(v: HuntView) {
+  const best = v.winner?.price ?? 0;
   return {
-    description: 'Live data from one run of the Guild agent job market.',
+    description: 'Live data from one Guild deal bounty: every claim agents made and what Guild found on the page.',
     sources: [
       {
-        id: 'bids', name: 'Bids', description: 'Every bid on every job, with how the market ranked it.',
-        data: v.bids,
-        fields: [f('job', 'textFormat', 'Job'), f('attempt', 'integerFormat', 'Round'), f('agent', 'textFormat', 'Agent'),
-                 f('price', 'currencyFormat', 'Price'), f('eta_s', 'integerFormat', 'ETA (s)'),
-                 f('stars', 'decimalFormat', 'Rating'), f('value', 'decimalFormat', 'Value score'),
-                 f('status', 'textFormat', 'Result'), f('reason', 'textFormat', 'Why')],
+        id: 'claims', name: 'Claims', description: 'Every claimed deal, the price on the page, and why it passed or failed.',
+        data: v.claims.map(c => ({ ...c, page_price: c.page_price ?? undefined, origin: c.outside ? 'outside' : 'Guild' })),
+        fields: [f('n', 'integerFormat', '#'), f('agent', 'textFormat', 'Agent'), f('origin', 'textFormat', 'Built by'),
+                 f('shop', 'textFormat', 'Shop'), f('claimed', 'currencyFormat', 'Claimed'),
+                 f('page_price', 'currencyFormat', 'Page says'), f('result', 'textFormat', 'Result'),
+                 f('reason', 'textFormat', 'Why'), f('at', 'decimalFormat', 'At (s)'),
+                 f('stars_after', 'decimalFormat', 'Rating after'), f('passed', 'integerFormat', 'Passed'),
+                 f('rejected', 'integerFormat', 'Rejected'), f('url', 'textFormat', 'Link')],
       },
       {
-        id: 'settlements', name: 'Settlements', description: 'Reviewer verdict and payment for each piece of work.',
-        data: v.settlements.map(s => ({ ...s, n: 1 })),
-        fields: [f('job', 'textFormat', 'Job'), f('agent', 'textFormat', 'Agent'), f('verdict', 'textFormat', 'Verdict'),
-                 f('outcome', 'textFormat', 'Outcome'), f('price', 'currencyFormat', 'Bid'),
-                 f('paid', 'currencyFormat', 'Paid'), f('withheld', 'currencyFormat', 'Withheld'),
-                 f('stars_after', 'decimalFormat', 'Rating after'), f('reasons', 'textFormat', 'Reviewer notes'),
-                 f('n', 'integerFormat', 'Count')],
+        id: 'agents', name: 'Agents', description: 'Each agent in this bounty: rating before and after, claims allowed and made.',
+        data: v.racers.map(r => ({ ...r, origin: r.outside ? 'outside' : 'Guild' })),
+        fields: [f('agent', 'textFormat', 'Agent'), f('origin', 'textFormat', 'Built by'), f('tool', 'textFormat', 'Tool'),
+                 f('mode', 'textFormat', 'Mode'), f('stars_before', 'decimalFormat', 'Rating before'),
+                 f('stars', 'decimalFormat', 'Rating now'), f('max_claims', 'integerFormat', 'Claims allowed'),
+                 f('claims', 'integerFormat', 'Claims'), f('passed', 'integerFormat', 'Passed'),
+                 f('rejected', 'integerFormat', 'Rejected')],
       },
       {
-        id: 'agents', name: 'Agents', description: 'Each agent: rating, jobs won and failed, and earnings.',
-        data: v.agents,
-        fields: [f('agent', 'textFormat', 'Agent'), f('stars', 'decimalFormat', 'Rating'), f('earned', 'currencyFormat', 'Earned'),
-                 f('won', 'integerFormat', 'Won'), f('failed', 'integerFormat', 'Failed')],
+        // Always passed then rejected, so the chart palette gives them green then red.
+        id: 'results', name: 'Results', description: 'How many claims passed and how many were rejected.',
+        data: (['passed', 'rejected'] as const).map(result => ({ result, claims: v.claims.filter(c => c.result === result).length })),
+        fields: [f('result', 'textFormat', 'Result'), f('claims', 'integerFormat', 'Claims')],
       },
       {
-        id: 'budget', name: 'Budget', description: 'The buyer budget held on PayPal and how much was spent.',
-        data: [{ budget: v.budget, spent: v.spent, remaining: +(v.budget - v.spent).toFixed(2),
-                 mode: v.payment ? String(v.payment.mode) : 'pending' }],
-        fields: [f('budget', 'currencyFormat', 'Budget'), f('spent', 'currencyFormat', 'Spent'),
-                 f('remaining', 'currencyFormat', 'Released to buyer'), f('mode', 'textFormat', 'PayPal mode')],
+        id: 'deal', name: 'Deal', description: 'The best verified price, what the buyer saved, and the bounty.',
+        data: [{ best, saved: v.winner?.saved ?? 0, max_price: v.want?.max_price ?? 0, bounty: v.want?.bounty ?? 0,
+                 paid: v.winner ? v.want?.bounty ?? 0 : 0, mode: v.payment ? String(v.payment.mode) : 'pending' }],
+        fields: [f('best', 'currencyFormat', 'Best verified price'), f('saved', 'currencyFormat', 'Under max by'),
+                 f('max_price', 'currencyFormat', 'Max price'), f('bounty', 'currencyFormat', 'Bounty'),
+                 f('paid', 'currencyFormat', 'Bounty paid'), f('mode', 'textFormat', 'PayPal mode')],
       },
     ],
   };
@@ -53,39 +57,39 @@ const title = (text: string) => ({ title: { enabled: true, text } });
 const at = (xTrack: number, yTrack: number, xSpan: number, ySpan: number) => ({ xTrack, yTrack, xSpan, ySpan });
 
 export const initialState = {
-  selectedPageId: 'market',
+  selectedPageId: 'bounty',
   pages: [{
-    id: 'market',
+    id: 'bounty',
     widgets: {
-      spent: { type: 'value', dataMapping: { value: [ref('budget.spent', 'sum')] }, format: title('Paid out') },
-      withheld: { type: 'value', dataMapping: { value: [ref('settlements.withheld', 'sum')] }, format: title('Withheld') },
-      released: { type: 'value', dataMapping: { value: [ref('budget.remaining', 'sum')] }, format: title('Released') },
-      jobs: { type: 'value', dataMapping: { value: [ref('settlements.n', 'sum')] }, format: title('Reviews') },
-      earnings: {
+      best: { type: 'value', dataMapping: { value: [ref('deal.best', 'sum')] }, format: title('Best verified price') },
+      saved: { type: 'value', dataMapping: { value: [ref('deal.saved', 'sum')] }, format: title('Under your max') },
+      passed: { type: 'value', dataMapping: { value: [ref('claims.passed', 'sum')] }, format: title('Claims passed') },
+      rejected: { type: 'value', dataMapping: { value: [ref('claims.rejected', 'sum')] }, format: title('Claims rejected') },
+      byAgent: {
         type: 'bar-chart-grouped',
-        dataMapping: { categoryKey: [ref('settlements.agent')], valueKey: [ref('settlements.paid', 'sum')] },
-        format: title('Earnings by agent'),
+        dataMapping: { categoryKey: [ref('claims.agent')], valueKey: [ref('claims.passed', 'sum'), ref('claims.rejected', 'sum')] },
+        format: title('Claims by agent: passed vs rejected'),
       },
-      outcomes: {
+      outcome: {
         type: 'donut-chart',
-        dataMapping: { categoryKey: [ref('settlements.outcome')], valueKey: [ref('settlements.n', 'sum')] },
-        format: title('Review outcomes'),
+        dataMapping: { categoryKey: [ref('results.result')], valueKey: [ref('results.claims', 'sum')] },
+        format: title('Claim results'),
       },
-      bids: {
+      claims: {
         type: 'grid',
-        dataMapping: { cols: ['job', 'attempt', 'agent', 'price', 'stars', 'value', 'status', 'reason'].map(c => ref(`bids.${c}`)) },
-        format: title('Every bid, ranked by value = rating² ÷ price'),
+        dataMapping: { cols: ['n', 'agent', 'shop', 'claimed', 'page_price', 'result', 'reason', 'at'].map(c => ref(`claims.${c}`)) },
+        format: title('Every claim, checked against the shop\'s own page'),
       },
-      reputation: {
+      agents: {
         type: 'grid',
-        dataMapping: { cols: ['agent', 'stars', 'won', 'failed', 'earned'].map(c => ref(`agents.${c}`)) },
-        format: title('Agent reputation'),
+        dataMapping: { cols: ['agent', 'origin', 'tool', 'stars_before', 'stars', 'max_claims', 'passed', 'rejected'].map(c => ref(`agents.${c}`)) },
+        format: title('Agents in this bounty'),
       },
     },
     widgetLayout: {
-      spent: at(0, 0, 6, 7), withheld: at(6, 0, 6, 7), released: at(12, 0, 6, 7), jobs: at(18, 0, 6, 7),
-      earnings: at(0, 7, 12, 17), outcomes: at(12, 7, 12, 17),
-      bids: at(0, 24, 24, 20), reputation: at(0, 44, 24, 14),
+      best: at(0, 0, 6, 7), saved: at(6, 0, 6, 7), passed: at(12, 0, 6, 7), rejected: at(18, 0, 6, 7),
+      byAgent: at(0, 7, 14, 17), outcome: at(14, 7, 10, 17),
+      claims: at(0, 24, 24, 20), agents: at(0, 44, 24, 14),
     },
   }],
 };
@@ -97,6 +101,9 @@ export const guildTheme = studioTheme.withParams({
   backgroundColor: '#ffffff',
   studioMinWidth: 320,
   studioCanvasMinWidth: 320,
+  // Series 1 is always "passed" and series 2 "rejected".
+  chartPaletteFills1Color: '#2e9e5b', chartPaletteStrokes1Color: '#1f7a43',
+  chartPaletteFills2Color: '#d9534f', chartPaletteStrokes2Color: '#b42318',
 } as any);
 
 // Rating cells show stars, so a judge sees reputation at a glance.
@@ -123,8 +130,8 @@ export const widgets = createWidgets({
     options: {
       createCellRenderer: (field: any) => {
         const id = String(field?.id ?? field?.fieldId ?? '');
-        if (/\.(stars|stars_after)$/.test(id)) return StarsCell;
-        if (/\.(status|outcome)$/.test(id)) return StatusCell;
+        if (/\.(stars|stars_after|stars_before)$/.test(id)) return StarsCell;
+        if (/\.(result|origin)$/.test(id)) return StatusCell;
         return undefined;
       },
     },

@@ -1,5 +1,5 @@
-// Bryntum Gantt timeline: one row per job, one bar per attempt, coloured by the
-// reviewer's outcome. Dependencies show that the team email waits on everything else.
+// Bryntum Gantt timeline of one bounty: a row per agent, a bar for its search, and a
+// marker per claim at the second it arrived, green if Guild verified it, red if not.
 import { useEffect, useMemo, useRef } from 'react';
 import { BryntumGantt } from '@bryntum/gantt-react';
 import '@bryntum/gantt/fontawesome/css/fontawesome.css';
@@ -7,54 +7,51 @@ import '@bryntum/gantt/fontawesome/css/solid.css';
 import '@bryntum/gantt/gantt.css';
 import '@bryntum/gantt/svalbard-light.css';
 import { StringHelper } from '@bryntum/gantt';
-import type { MarketView } from './market';
-import { agentName, timelineRows } from './market';
+import type { HuntView } from './hunt';
 
-// The run's clock is agent work time in seconds, drawn from a fixed start so the
-// chart is identical for identical runs.
+// Seconds since the bounty opened, drawn from a fixed start so identical bounties
+// give identical charts.
 const T0 = new Date('2026-11-02T09:00:00');
-const at = (s: number) => new Date(T0.getTime() + s * 1000);
+const at = (s: number) => new Date(T0.getTime() + Math.round(s * 1000));
 // Static props must keep their identity: the React wrapper re-applies any prop
 // that changes, and a fresh `project` object would wipe the loaded tasks.
-const VIEW_PRESET = { base: 'minuteAndHour', tickWidth: 40, headers: [{ unit: 'minute', increment: 1, dateFormat: 'mm' }] };
-const COLUMNS = [{ type: 'name', text: 'Job and attempts', width: typeof window !== 'undefined' && window.innerWidth < 600 ? 150 : 320 }];
+const VIEW_PRESET = { base: 'secondAndMinute', tickWidth: 36, headers: [{ unit: 'second', increment: 1, dateFormat: 's' }] };
+const COLUMNS = [{ type: 'name', text: 'Agent and claims', width: typeof window !== 'undefined' && window.innerWidth < 600 ? 150 : 300 }];
 const TOOLTIP = {
   template: ({ taskRecord }: any) =>
     `<b>${StringHelper.encodeHtml(taskRecord.name)}</b><br>${StringHelper.encodeHtml(taskRecord.note ?? '')}`,
 };
-const END0 = at(600);
-const COLORS: Record<string, string> = { paid: 'green', unpaid: 'red', held: 'orange' };
+const END0 = at(10);
 
-function toProject(v: MarketView) {
-  const lastEnd = Math.max(0, ...v.attempts.map(a => a.end));
-  const tasks = timelineRows(v).map(({ job, attempts, blocked, unfunded }) => {
-    const status = unfunded ? 'no affordable bid' : blocked ? `blocked by ${blocked.join(', ')}` : '';
-    const children = attempts.map((a, i) => ({
-      id: `${job.id}-${i + 1}`,
-      name: `${agentName(a.agent)} · $${a.price.toFixed(2)}${a.outcome ? ` · ${a.outcome}` : ' · working'}`,
-      startDate: at(a.start), endDate: at(a.end), manuallyScheduled: true,
-      eventColor: a.outcome ? COLORS[a.outcome] ?? 'gray' : 'blue',
-      note: [a.tool && `tool: ${a.tool}`, a.mode && `(${a.mode})`].filter(Boolean).join(' '),
-    }));
+export function toProject(v: HuntView) {
+  const last = Math.max(0, ...v.claims.map(c => c.at), ...v.racers.map(r => r.searched_at ?? 0));
+  const tasks = v.racers.map(r => {
+    const mine = v.claims.filter(c => c.agent_id === r.agent_id);
+    const end = Math.max(r.searched_at ?? 0, ...mine.map(c => c.at), 0.2);
+    const children = [
+      ...(r.outside ? [] : [{
+        id: `${r.agent_id}-search`, name: `searching${r.tool ? ` with ${r.tool}` : ''}`,
+        startDate: at(0), endDate: at(Math.max(r.searched_at ?? end, 0.2)), manuallyScheduled: true,
+        eventColor: r.searched_at == null ? 'blue' : 'gray', note: r.mode === 'simulated' ? 'demo data' : 'live',
+      }]),
+      ...mine.map(c => ({
+        id: `${r.agent_id}-c${c.n}`, name: `${c.result === 'passed' ? '✓' : '✗'} $${c.claimed.toFixed(2)} · ${c.shop}`,
+        startDate: at(c.at), duration: 0, manuallyScheduled: true,
+        eventColor: c.result === 'passed' ? 'green' : 'red',
+        note: c.reason,
+      })),
+    ];
     return {
-      id: job.id,
-      name: status ? `${job.title} (${status})` : job.title,
-      expanded: true,
-      manuallyScheduled: true,
-      ...(attempts.length
-        ? { children, startDate: at(attempts[0].start), endDate: at(attempts[attempts.length - 1].end) }
-        // Never ran (blocked or unaffordable): a grey marker, never a bar that looks paid.
-        : { startDate: at(lastEnd), duration: 0, eventColor: 'gray' }),
+      id: r.agent_id,
+      name: `${r.agent}${r.outside ? ' (outside)' : ''} · ${r.passed}✓ ${r.rejected}✗`,
+      expanded: true, manuallyScheduled: true, children,
+      startDate: at(0), endDate: at(end),
     };
   });
-  const ids = new Set(v.jobs.map(j => j.id));
-  const dependencies = v.jobs.flatMap(j =>
-    j.depends_on.filter(d => ids.has(d)).map(d => ({ id: `${d}->${j.id}`, from: d, to: j.id })));
-  const end = Math.max(600, ...v.attempts.map(a => a.end + 60));
-  return { tasks, dependencies, end };
+  return { tasks, end: Math.max(10, Math.ceil(last) + 2) };
 }
 
-export default function Timeline({ view }: { view: MarketView }) {
+export default function Timeline({ view }: { view: HuntView }) {
   const ref = useRef<BryntumGantt>(null);
   const data = useMemo(() => toProject(view), [view]);
 
@@ -76,7 +73,7 @@ export default function Timeline({ view }: { view: MarketView }) {
              g = ref.current?.instance) {
           loaded = latest.current; into = g;
           // Bryntum takes ownership of the objects it loads, so hand it fresh copies.
-          await g.project.loadInlineData(structuredClone({ tasks: loaded.tasks, dependencies: loaded.dependencies }));
+          await g.project.loadInlineData(structuredClone({ tasks: loaded.tasks }));
           await g.project.commitAsync();
           if (!g.isDestroyed) g.setTimeSpan(T0, at(loaded.end));
         }

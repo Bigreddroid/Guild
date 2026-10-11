@@ -98,9 +98,10 @@ class Funds:
         self._pending: dict = {}
         self._lock = threading.Lock()
 
-    def start(self, budget: Decimal, public_url: str, kind: str = "market") -> tuple:
+    def start(self, budget: Decimal, public_url: str, kind: str = "market", data=None) -> tuple:
         """Create the AUTHORIZE order; returns (fund_id, approve_url). `kind` says what
-        the money is for ("market" run or deal "hunt") and comes back on completion."""
+        the money is for ("market" run or deal "hunt") and `data` what was asked for
+        (a hunt's want); both come back on completion."""
         fund_id = secrets.token_urlsafe(16)
         base = public_url.rstrip("/")
         order = self.client.create_order(budget, CURRENCY, reference_id=f"guild-{fund_id[:12]}",
@@ -112,7 +113,7 @@ class Funds:
         with self._lock:
             now = self.clock()
             self._pending = {k: v for k, v in self._pending.items() if now - v["at"] < FUND_TTL_S}
-            self._pending[fund_id] = {"order_id": order["id"], "budget": budget, "at": now, "kind": kind}
+            self._pending[fund_id] = {"order_id": order["id"], "budget": budget, "at": now, "kind": kind, "data": data}
         return fund_id, url
 
     def cancel(self, fund_id: str) -> None:
@@ -120,7 +121,7 @@ class Funds:
             self._pending.pop(fund_id, None)
 
     def complete(self, fund_id: str, token: str) -> tuple:
-        """The buyer approved: authorize the order. Returns (budget, authorization_id, kind)."""
+        """The buyer approved: authorize the order. Returns (budget, authorization_id, kind, data)."""
         with self._lock:
             entry = self._pending.pop(fund_id, None)  # single use, even if authorizing fails
         if entry is None or self.clock() - entry["at"] >= FUND_TTL_S:
@@ -134,7 +135,7 @@ class Funds:
             raise FundingError("PayPal did not return an authorization")
         if auth.get("status") not in ("CREATED", "PENDING"):
             raise FundingError(f"authorization status {auth.get('status')}")
-        return entry["budget"], auth["id"], entry.get("kind", "market")
+        return entry["budget"], auth["id"], entry.get("kind", "market"), entry.get("data")
 
 
 def owners_from_env() -> dict:

@@ -245,8 +245,8 @@ class HuntFundingTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("hunt did not finish")
 
-    def fund(self, c, fake, bounty="2.00"):
-        r = c.post("/api/fund", json={"kind": "hunt", "bounty": bounty})
+    def fund(self, c, fake, bounty="2.00", **want):
+        r = c.post("/api/fund", json={"kind": "hunt", "bounty": bounty, **want})
         self.assertEqual(r.status_code, 200, r.text)
         order = fake.calls[1][3]
         self.assertEqual(order["purchase_units"][0]["amount"]["value"], bounty)
@@ -267,6 +267,20 @@ class HuntFundingTests(unittest.TestCase):
         self.assertEqual((win["agent_id"], pay["mode"], pay["captured"], pay["released"]), ("browser", "sandbox", "2.00", "0.00"))
         payout = next(d for _, p, _, d in fake.calls if p == "/v1/payments/payouts")
         self.assertEqual([(i["receiver"], i["amount"]["value"]) for i in payout["items"]], [("dev-browser@buyer.example", "2.00")])
+
+    def test_the_buyers_own_want_survives_the_trip_to_paypal(self):
+        fake = FakePayPal()
+        events = self.fund(self.app(fake), fake, bounty="3.00", must_have=["Kindle", "Paperwhite"], max_price="150")
+        self.assertEqual((events[0]["must_have"], events[0]["max_price"], events[0]["bounty"]),
+                         (["Kindle", "Paperwhite"], "150.00", "3.00"))
+        self.assertTrue(events[-1]["voided"])  # the demo shops sell no Kindles: nobody is paid
+
+    def test_a_bad_want_is_refused_before_paypal_is_called(self):
+        fake = FakePayPal()
+        r = self.app(fake).post("/api/fund", json={"kind": "hunt", "bounty": "2.00", "ship_to": "Mars"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("ship_to", r.json()["detail"])
+        self.assertEqual(fake.calls, [])
 
     def test_no_real_deal_means_the_hold_is_voided(self):
         from guild.hunters import default_hunters

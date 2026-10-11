@@ -6,7 +6,8 @@ from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from guild.bounty import (Claim, Want, canonical_url, claim_limit, pick_winner, read_offer, verify)
+from guild.bounty import (Claim, Want, WantError, canonical_url, claim_limit, parse_want, pick_winner, read_offer,
+                          verify)
 
 D = Decimal
 WANT = Want(id="w1", title="Sony WH-1000XM5 headphones, black, new", must_have=("WH-1000XM5", "Sony"),
@@ -175,6 +176,32 @@ class WinnerTests(unittest.TestCase):
         self.assertEqual(canonical_url("https://Shop.example/p/1/?utm_source=a&color=b&ref=x"),
                          canonical_url("https://shop.example/p/1?color=b"))
         self.assertEqual([claim_limit(r) for r in (0.9, 0.6, 0.3)], [5, 3, 1])
+
+
+
+class ParseWantTests(unittest.TestCase):
+    def setUp(self):
+        from guild.shops import DEMO_WANT
+        self.default = DEMO_WANT
+
+    def test_no_terms_means_the_demo_want_with_the_buyers_bounty(self):
+        w = parse_want({"bounty": "5"}, Decimal("5.00"), self.default, "w1")
+        self.assertEqual((w.id, w.must_have, w.bounty), ("w1", self.default.must_have, Decimal("5.00")))
+
+    def test_a_buyers_want_is_cleaned_and_titled(self):
+        w = parse_want({"must_have": "Kindle, Paperwhite, kindle", "must_not": [], "max_price": "149.5", "ship_to": " in "},
+                       Decimal("2"), self.default, "w2")
+        self.assertEqual((w.must_have, w.must_not, w.max_price, w.ship_to), (("Kindle", "Paperwhite"), (), Decimal("149.50"), "IN"))
+        self.assertEqual(w.title, "Kindle Paperwhite, under $149.5, ship to IN")
+        self.assertTrue(parse_want({"must_have": ["x1"], "title": "<b>hi</b>"}, Decimal("2"), self.default, "w").title.startswith("x1"))
+
+    def test_bad_wants_are_refused(self):
+        for body in ({"must_have": []}, {"must_have": ["a"] * 7}, {"must_have": ["<x>"]}, {"must_have": ["--"]},
+                     {"max_price": "0"}, {"max_price": "9999"}, {"max_price": "NaN"}, {"max_price": "abc5"},
+                     {"max_price": True}, {"ship_to": "USA"}, {"must_have": ["Sony"], "must_not": ["sony"]},
+                     {"must_have": {"a": 1}}):
+            with self.assertRaises(WantError, msg=body):
+                parse_want(body, Decimal("2"), self.default, "w")
 
 
 if __name__ == "__main__":

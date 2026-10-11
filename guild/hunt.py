@@ -79,7 +79,7 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
         if kind != "external":
             emit({"type": "searched", "agent_id": agent_id, "claims": len(payload), "at": at})
         elif not allowed:
-            emit({"type": "claim_refused", "agent_id": agent_id, "reason": "claim limit for this bounty reached"})
+            emit({"type": "claim_refused", "agent_id": agent_id, "agent_name": card.name, "reason": "claim limit for this bounty reached"})
             continue
         for raw in payload[:allowed]:
             used[agent_id] = used.get(agent_id, 0) + 1
@@ -99,7 +99,7 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
                 card.passes += 1
             else:
                 card.fails += 1
-            emit({"type": "claim", "claim_id": c.id, "agent_id": agent_id, "url": url, "claimed": str(c.price),
+            emit({"type": "claim", "claim_id": c.id, "agent_id": agent_id, "agent_name": card.name, "url": url, "claimed": str(c.price),
                   "page_price": str(v.offer.price) if v.offer and v.offer.price else None,
                   "page_name": v.offer.name[:160] if v.offer else None, "valid": v.valid, "reasons": v.reasons,
                   "stars_after": card.stars, "at": at, "outside": kind == "external"})
@@ -109,7 +109,7 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
     winner = pick_winner(verdicts, deadline_s)
     if winner:
         card = cards[winner.claim.agent_id]
-        emit({"type": "winner", "agent_id": card.id, "url": winner.claim.url, "price": str(winner.offer.price),
+        emit({"type": "winner", "agent_id": card.id, "agent_name": card.name, "url": winner.claim.url, "price": str(winner.offer.price),
               "page_name": winner.offer.name[:160], "bounty": str(want.bounty), "at": winner.claim.at,
               "saved": str(want.max_price - winner.offer.price)})
         owed = {card.owner_email: want.bounty}

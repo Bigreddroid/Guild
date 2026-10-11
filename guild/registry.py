@@ -41,9 +41,13 @@ class Registry:
         self._agents: dict = {}     # agent_id -> record
         self._by_token: dict = {}   # token hash -> agent_id
         self.cards: dict = {}       # agent_id -> AgentCard (live reputation)
+        self.house: dict = {}       # Guild's own agents: id -> AgentCard, shared by every hunt
+        self._house_saved: dict = {}
         if path and path.exists():
-            for rec in json.loads(path.read_text()).get("agents", []):
+            saved = json.loads(path.read_text())
+            for rec in saved.get("agents", []):
                 self._add(rec)
+            self._house_saved = saved.get("house", {})
 
     def _add(self, rec: dict) -> None:
         self._agents[rec["id"]] = rec
@@ -56,9 +60,10 @@ class Registry:
             return
         for aid, card in self.cards.items():
             self._agents[aid]["passes"], self._agents[aid]["fails"] = card.passes, card.fails
+        house = {aid: {"passes": c.passes, "fails": c.fails} for aid, c in self.house.items()}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"agents": list(self._agents.values())}, indent=1))
+        tmp.write_text(json.dumps({"agents": list(self._agents.values()), "house": house}, indent=1))
         tmp.replace(self.path)
 
     def register(self, name: str, payout_email: str, description: str = "") -> tuple:
@@ -83,6 +88,23 @@ class Registry:
             self._save()
         return agent_id, token
 
+    def adopt(self, hunters: dict) -> dict:
+        """Give Guild's own agents one card each that every hunt shares, so their
+        reputation carries from bounty to bounty (and across restarts)."""
+        with self._lock:
+            for h in hunters.values():
+                card = self.house.get(h.card.id)
+                if card is None:
+                    card = h.card
+                    saved = self._house_saved.get(card.id)
+                    if isinstance(saved, dict):
+                        card.passes, card.fails = int(saved.get("passes", 0)), int(saved.get("fails", 0))
+                    self.house[card.id] = card
+                else:
+                    card.owner_email = h.card.owner_email
+                h.card = card
+        return hunters
+
     def authenticate(self, token: str) -> Optional[AgentCard]:
         if not token or not token.startswith("gk_") or len(token) > 100:
             return None
@@ -94,10 +116,14 @@ class Registry:
         if card is None:
             return None
         return {"id": card.id, "name": card.name, "stars": card.stars, "passes": card.passes, "fails": card.fails,
-                "description": self._agents[agent_id].get("description", "")}
+                "description": self._agents[agent_id].get("description", ""), "house": False}
 
     def leaderboard(self) -> list:
-        return sorted((self.public(a) for a in self.cards), key=lambda r: (-r["stars"], r["name"]))
+        """Every agent that has hunted here, Guild's own included. No payout emails."""
+        rows = [self.public(a) for a in self.cards]
+        rows += [{"id": c.id, "name": c.name, "stars": c.stars, "passes": c.passes, "fails": c.fails,
+                  "description": "Guild's own agent", "house": True} for c in self.house.values()]
+        return sorted(rows, key=lambda r: (-r["stars"], r["name"]))
 
     def save(self) -> None:
         with self._lock:

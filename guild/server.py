@@ -32,6 +32,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from guild import funding, shops, vendor
 from guild.agents import agent_modes, default_agents
+from guild.bounty import Want, WantError, parse_want
 from guild.fetcher import SafeFetcher
 from guild.hunt import OpenHunt, run_hunt
 from guild.hunters import default_hunters
@@ -153,20 +154,21 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
     def running() -> int:
         return sum(1 for r in runs.values() if not r.done)
 
-    def execute(r: Run, run_id: str, budget: Decimal, authorization_id: Optional[str], kind: str = "market") -> None:
+    def execute(r: Run, run_id: str, budget: Decimal, authorization_id: Optional[str], kind: str = "market",
+                want=None) -> None:
         try:
             if kind == "hunt":
                 # The budget is the bounty: held on PayPal, paid in full to the winner's developer.
-                want = dataclasses.replace(shops.DEMO_WANT, bounty=budget)
+                want = want or dataclasses.replace(shops.DEMO_WANT, bounty=budget)
                 door = OpenHunt()
                 open_hunts[run_id] = {"door": door, "want": want, "opened": time.monotonic()}
                 try:
                     # With outside agents registered, the bounty stays open for its whole window.
-                    result = run_hunt(want, make_hunters(), hunt_fetch, r.emit, deadline_s=hunt_deadline_s,
+                    result = run_hunt(want, agents_registry.adopt(make_hunters()), hunt_fetch, r.emit, deadline_s=hunt_deadline_s,
                                       speed=hunt_speed, door=door, close_early=len(agents_registry) == 0)
                 finally:
                     open_hunts.pop(run_id, None)
-                    agents_registry.save()  # outside agents' reputation persists
+                    agents_registry.save()  # every agent's reputation persists
             else:
                 lead, reviewer = make_brain()
                 result = run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
@@ -187,7 +189,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         finally:
             r.done = True
 
-    def start_run(budget: Decimal, authorization_id: Optional[str] = None, kind: str = "market") -> str:
+    def start_run(budget: Decimal, authorization_id: Optional[str] = None, kind: str = "market", want=None) -> str:
         r = Run()
         run_id = uuid.uuid4().hex[:12]
         with lock:
@@ -200,7 +202,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                 if not runs[oldest].done:
                     break
                 runs.pop(oldest)
-        threading.Thread(target=execute, args=(r, run_id, budget, authorization_id, kind), daemon=True).start()
+        threading.Thread(target=execute, args=(r, run_id, budget, authorization_id, kind, want), daemon=True).start()
         return run_id
 
     async def read_json(request: Request) -> dict:
@@ -317,13 +319,21 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         budget = _parse_budget((await read_json(request)).get("budget"))
         return {"run_id": start_run(budget)}
 
+    def want_from(body: dict) -> "Want":
+        bounty = _parse_budget(body.get("bounty", str(shops.DEMO_WANT.bounty)))
+        try:
+            return parse_want(body, bounty, shops.DEMO_WANT, f"want-{uuid.uuid4().hex[:8]}")
+        except WantError as exc:
+            raise HTTPException(400, str(exc))
+
     @app.post("/api/hunts")
     async def create_hunt(request: Request):
-        """Start a deal bounty (unfunded: ends with a PayPal preview). Body: {"bounty"}."""
+        """Start a deal bounty (unfunded: ends with a PayPal preview). Body: {"bounty"} plus,
+        optionally, the want: must_have, must_not, max_price, ship_to, title."""
         if not limiter.allow(client_key(request)):
             raise HTTPException(429, "too many runs; wait a minute")
-        bounty = _parse_budget((await read_json(request)).get("bounty", str(shops.DEMO_WANT.bounty)))
-        return {"run_id": start_run(bounty, kind="hunt")}
+        want = want_from(await read_json(request))
+        return {"run_id": start_run(want.bounty, kind="hunt", want=want), "want": want.title}
 
     @app.post("/api/fund")
     async def fund(request: Request):
@@ -337,10 +347,10 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
             raise HTTPException(429, "too many runs; wait a minute")
         body = await read_json(request)
         kind = "hunt" if body.get("kind") == "hunt" else "market"
-        amount = body.get("bounty", str(shops.DEMO_WANT.bounty)) if kind == "hunt" else body.get("budget")
-        budget = _parse_budget(amount)
+        want = want_from(body) if kind == "hunt" else None
+        budget = want.bounty if want else _parse_budget(body.get("budget"))
         try:
-            _, url = funds.start(budget, public_url, kind)
+            _, url = funds.start(budget, public_url, kind, want)
         except (PayPalError, funding.FundingError) as exc:
             raise HTTPException(502, f"PayPal: {exc}")
         return {"approve_url": url}
@@ -355,10 +365,10 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         if funds is None:
             return back_home("PayPal is not configured")
         try:
-            budget, authorization_id, kind = funds.complete(fund, token)
+            budget, authorization_id, kind, want = funds.complete(fund, token)
         except (PayPalError, funding.FundingError) as exc:
             return back_home(f"payment not authorized: {exc}")
-        return back_home(run_id=start_run(budget, authorization_id, kind), kind=kind)
+        return back_home(run_id=start_run(budget, authorization_id, kind, want), kind=kind)
 
     @app.get("/api/paypal/cancel", include_in_schema=False)
     def paypal_cancel(fund: str = ""):
