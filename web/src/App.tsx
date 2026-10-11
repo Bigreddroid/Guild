@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AgStudio } from 'ag-studio-react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyView, reduce, type GuildEvent } from './market';
-import { guildTheme, initialState, studioData, widgets } from './studio';
-import Timeline from './Timeline';
+
+// AG Studio and Bryntum are large; load them after the page shell has painted.
+const Dashboard = lazy(() => import('./Dashboard'));
+const Timeline = lazy(() => import('./Timeline'));
+const Loading = ({ what }: { what: string }) => <p className="muted small loading">Loading {what}…</p>;
 
 type Status = 'idle' | 'starting' | 'live' | 'done' | 'error';
 
@@ -18,7 +20,6 @@ export default function App() {
 
   const view = useMemo(() => (events.length ? reduce(events, runBudget.current) : emptyView(Number(budget) || 0)),
     [events, budget]);
-  const data = useMemo(() => studioData(view), [view]);
 
   const attach = useCallback((runId: string) => {
     source.current?.close();
@@ -138,14 +139,14 @@ export default function App() {
             </div>
           </div>
           <div className="studio-scroll"><div className="studio-box">
-            <AgStudio style={{ height: '100%' }} panels={{ view: { right: [] } } as any} data={data as any} initialState={initialState as any} mode={mode} theme={guildTheme as any} widgets={widgets as any} />
+            <Suspense fallback={<Loading what="the AG Studio dashboard" />}><Dashboard view={view} mode={mode} /></Suspense>
           </div></div>
         </section>
 
         <section className="panel timeline" aria-label="Job timeline">
           <h2>Job timeline <span className="by">Bryntum Gantt</span></h2>
           <p className="muted small">Minutes of agent work. Green = paid, red = failed review (unpaid), blue = working.</p>
-          <div className="gantt-box"><Timeline view={view} /></div>
+          <div className="gantt-box"><Suspense fallback={<Loading what="the Bryntum timeline" />}><Timeline view={view} /></Suspense></div>
         </section>
       </main>
 

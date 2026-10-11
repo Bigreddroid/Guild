@@ -2,6 +2,10 @@
 // reviewer's outcome. Dependencies show that the team email waits on everything else.
 import { useEffect, useMemo, useRef } from 'react';
 import { BryntumGantt } from '@bryntum/gantt-react';
+import '@bryntum/gantt/fontawesome/css/fontawesome.css';
+import '@bryntum/gantt/fontawesome/css/solid.css';
+import '@bryntum/gantt/gantt.css';
+import '@bryntum/gantt/svalbard-light.css';
 import { StringHelper } from '@bryntum/gantt';
 import type { MarketView } from './market';
 import { agentName, timelineRows } from './market';

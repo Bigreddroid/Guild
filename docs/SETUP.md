@@ -7,6 +7,7 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
 1. In Render, choose **New → Blueprint** and pick this repository. It reads `render.yaml`.
 2. Wait for the first deploy, then open the URL. The demo runs with simulated agents.
 3. `RENDER_EXTERNAL_URL` is set by Render automatically. PayPal returns and the KERNEL browser both use it.
+4. **Keep it warm for judges.** The free tier sleeps after 15 idle minutes, and waking takes about 50 s. In GitHub, go to **Settings → Secrets and variables → Actions → Variables** and add `GUILD_URL` = your Render URL. The `keep-warm` workflow then pings `/healthz` every 10 minutes. A paid Starter instance avoids sleeping entirely.
 
 ## 2. PayPal sandbox (funding, capture, payouts)
 
