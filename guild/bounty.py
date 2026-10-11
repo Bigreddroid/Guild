@@ -243,7 +243,8 @@ def verify(want: Want, claim: Claim, fetch: Callable[[str], tuple]) -> Verdict:
     try:
         status, page = fetch(claim.url)
     except Exception as exc:
-        return Verdict(claim, False, [f"page could not be fetched ({type(exc).__name__})"])
+        detail = str(exc) if exc.__class__.__name__ == "FetchRefused" and str(exc) else type(exc).__name__
+        return Verdict(claim, False, [f"page could not be fetched ({detail})"])
     if status != 200:
         return Verdict(claim, False, [f"page returned HTTP {status}"])
     offer = read_offer(page or "")
