@@ -319,12 +319,14 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
     @app.get("/healthz")
     def healthz():
         lead, reviewer = make_brain()
-        return {"ok": True, "lead": lead.label, "reviewer": reviewer.label,
-                "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes(),
+        return {"ok": True,
                 "hunters": {h.card.id: f"{h.mode} ({h.tool})" for h in make_hunters().values()},
                 "payments": "PayPal sandbox" if paypal else "preview only (no PayPal keys)",
+                "funding": bool(funds and public_url),
                 "deal_history": deal_log.store, "deal_alerts": "Zapier" if deal_log.zapier else "off",
-                "funding": bool(funds and public_url)}
+                "outside_agents": len(agents_registry),
+                "prototype": {"lead": lead.label, "reviewer": reviewer.label,
+                              "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes()}}
 
     @app.post("/api/runs")
     async def create_run(request: Request):
