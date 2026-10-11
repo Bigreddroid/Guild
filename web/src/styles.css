@@ -48,6 +48,8 @@ button { font: inherit; cursor: pointer; }
 .deal-title { font-weight: 650; }
 .deal .small { margin: 2px 0 0; }
 .deal-none { background: #fef3f2; border-color: #fecdca; color: var(--bad); }
+.deals ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+.deals li { margin-bottom: 4px; }
 .board table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .board th, .board td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
 .board th { color: var(--muted); font-weight: 600; font-size: 12px; }
@@ -63,7 +65,7 @@ button { font: inherit; cursor: pointer; }
 
 .grid { display: grid; grid-template-columns: 320px 1fr; gap: 14px; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; min-width: 0; }
-.story { grid-row: span 3; max-height: 1440px; overflow: auto; }
+.story { grid-row: span 4; max-height: 1440px; overflow: auto; }
 .story ol { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.45; }
 .story li { margin-bottom: 4px; }
 .story li.good { color: var(--good); }

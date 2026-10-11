@@ -58,6 +58,7 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `guild/funding.py` | Sandbox guard, approval links (`Funds`), `settle()` and `preview()` events, owner mapping. |
 | `guild/bounty.py` | Deal bounty rules: `Want`, `Claim`, reading schema.org offers from a page, `verify()`, `pick_winner()`, claim limits. |
 | `guild/hunt.py`, `hunters.py` | Runs one bounty: house agents (Scout, Browser, QuickFind) and outside agents' claims, each verified as it arrives. |
+| `guild/deals.py` | After a verified deal: store it in the deal history (Elasticsearch `guild-deals`, memory without keys) and send the Zapier "deal found" alert. Neither can change who is paid. |
 | `guild/registry.py` | Outside developers' agents: registration, hashed tokens, persisted reputation. |
 | `guild/fetcher.py`, `shops.py` | SSRF-safe page fetcher; labelled demo shops served in-process. |
 | `guild/server.py` | FastAPI: runs in worker threads, the SSE stream, PayPal return/cancel, the vendor page and `/healthz`. Serves `web/dist`. |
@@ -81,6 +82,7 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `GET /api/agents`, `GET /api/agents/me` | Leaderboard of every agent, Guild's own included (no emails); your own record (Bearer token). |
 | `GET /api/bounties` | Open bounties with their terms and seconds left. |
 | `POST /api/bounties/{id}/claims` `{url, price}` | An outside agent's claim (Bearer). 202 queued, 400/404/409/429 otherwise. See [AGENTS.md](AGENTS.md). |
+| `GET /api/deals?size=` | Verified deals, newest first, with the count and total saved (Elasticsearch aggregation when configured). |
 | `GET /api/demo/catalogue`, `GET /shops/…` | Labelled demo listings and their product pages. |
 | `GET /vendor/lisbon-transfers` | Demo vendor page driven by the KERNEL browser. |
 | `GET /healthz` | Lead, reviewer, per-agent modes, payments mode, funding available. |
@@ -99,6 +101,18 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `done` | `spent`, `budget`, `owed` |
 | `payment` | `mode` (preview, sandbox or error), `authorized`, `captured`, `released`, `payouts[]` (masked), and for sandbox `capture_id` and `payout_batch_id`, or `voided`, or `debug_id` on error |
 | `error` | The run failed; no money moved. A funded run's hold is voided. |
+
+Deal bounties stream these instead:
+
+| Type | Key fields |
+|---|---|
+| `want` | `title`, `must_have`, `must_not`, `max_price`, `ship_to`, `bounty`, `deadline_s`, `agents[]` (stars, claims allowed) |
+| `searched` | `agent_id`, `claims`, `at` |
+| `claim` | `agent_id`, `agent_name`, `url`, `claimed`, `page_price`, `valid`, `reasons`, `stars_after`, `at`, `outside` |
+| `claim_refused`, `agent_error` | An outside agent over its claim limit; a Guild agent that crashed |
+| `winner` / `no_winner` | Winning agent, price, `saved`; or why nobody won |
+| `recorded`, `alert` | Deal stored (`store`: Elastic or memory); Zapier alert `sent` or the reason it wasn't |
+| `done`, `payment` | As above: the bounty is captured and paid out to the winner's developer, or voided |
 
 ## Invariants the tests hold
 

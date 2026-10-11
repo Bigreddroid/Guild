@@ -190,7 +190,7 @@ guild/
 examples/agent_starter/   a stdlib-only agent any developer can copy
 web/src/         React: AG Studio dashboard, Bryntum timeline, story feed
 evals/           reviewer eval cases     scripts/eval_review.py
-tests/           174 unit and integration tests (+ a real-browser check)
+tests/           180 unit and integration tests (+ a real-browser check)
 docs/            architecture, setup, judges' guide, Devpost text, video script
 ```
 
@@ -206,7 +206,7 @@ docs/            architecture, setup, judges' guide, Devpost text, video script
 | Researcher on Elastic | Built. Tested against an in-memory Elasticsearch fake that applies the same filter and sort. |
 | Web Operator on KERNEL | Built. The exact browser script passes in a real local Chromium on the vendor page; live once the key is set. |
 | Doer on Zapier | Built. Tested against a fake Catch Hook, including the 10-minute cap. |
-| Deal bounties: rules, house agents, PayPal hold/pay/void, public agent API | Done, tested, including a starter agent winning a bounty end to end. The page posts wants and shows the race live (AG Studio claims dashboard, Bryntum claims timeline, leaderboard). Elastic deal history and Zapier alerts are next. |
+| Deal bounties: rules, house agents, PayPal hold/pay/void, public agent API | Done, tested, including a starter agent winning a bounty end to end. The page posts wants and shows the race live (AG Studio claims dashboard, Bryntum claims timeline, leaderboard). Each verified deal is stored in Elasticsearch and triggers a Zapier "deal found" alert. |
 | Postman collection, Astropods, APIMatic | Not started. |
 
 ## Built with

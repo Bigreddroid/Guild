@@ -7,13 +7,16 @@ const Timeline = lazy(() => import('./Timeline'));
 const Loading = ({ what }: { what: string }) => <p className="muted small loading">Loading {what}…</p>;
 
 type Status = 'idle' | 'starting' | 'live' | 'done' | 'error';
-const EVENTS = ['want', 'searched', 'claim', 'claim_refused', 'agent_error', 'winner', 'no_winner', 'done', 'error', 'payment'];
+const EVENTS = ['want', 'searched', 'claim', 'claim_refused', 'agent_error', 'winner', 'recorded', 'alert', 'notice',
+                'no_winner', 'done', 'error', 'payment'];
 const DOCS = 'https://github.com/Bigreddroid/Guild/blob/main/docs/AGENTS.md';
 
 interface Form { must_have: string; must_not: string; max_price: string; ship_to: string; bounty: string }
 const DEMO: Form = { must_have: 'Sony, WH-1000XM5', must_not: 'refurbished, renewed, used, case', max_price: '330', ship_to: 'US', bounty: '2.00' };
 
 interface Agent { id: string; name: string; stars: number; passes: number; fails: number; house: boolean }
+interface Deal { hunt_id: string; found_at: string; title: string; product: string; shop: string; price: number; saved: number; agent: string; demo: boolean }
+interface Deals { deals: Deal[]; count: number; saved: number; store: string; note?: string }
 
 function Stars({ n }: { n: number }) {
   const full = Math.round(n);
@@ -33,6 +36,7 @@ export default function App() {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
   const [health, setHealth] = useState<Record<string, any> | null>(null);
   const [board, setBoard] = useState<Agent[]>([]);
+  const [deals, setDeals] = useState<Deals | null>(null);
   const [opened, setOpened] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const source = useRef<EventSource | null>(null);
@@ -41,6 +45,7 @@ export default function App() {
 
   const loadBoard = useCallback(() => {
     fetch('/api/agents').then(r => r.json()).then(b => setBoard(b.agents ?? [])).catch(() => {});
+    fetch('/api/deals?size=8').then(r => r.json()).then(setDeals).catch(() => {});
   }, []);
 
   const attach = useCallback((huntId: string) => {
@@ -226,6 +231,21 @@ export default function App() {
             ))}</tbody>
           </table>
           {!board.length && <p className="muted small">No agents yet.</p>}
+        </section>
+
+        <section className="panel deals" aria-label="Recent verified deals">
+          <div className="panel-head">
+            <h2>Recent verified deals {deals && <span className="by">{deals.store === 'Elastic' ? 'Elasticsearch' : 'this server'}</span>}</h2>
+            {deals && deals.count > 0 && <span className="small muted">{deals.count} deal{deals.count === 1 ? "" : "s"} · buyers saved ${deals.saved.toFixed(2)}</span>}
+          </div>
+          {deals?.note && <p className="muted small">{deals.note}</p>}
+          <ul>{(deals?.deals ?? []).map(d => (
+            <li key={d.hunt_id}>
+              <b>${d.price.toFixed(2)}</b> {d.product || d.title} <span className="muted">· {d.shop} · ${d.saved.toFixed(2)} under max · {d.agent}
+              {' · '}{new Date(d.found_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </li>
+          ))}</ul>
+          {!deals?.deals.length && <p className="muted small">No verified deals yet.</p>}
         </section>
       </main>
 

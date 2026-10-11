@@ -117,6 +117,15 @@ export function reduceHunt(events: HuntEvent[]): HuntView {
         say(`Winner: ${v.winner.agent}, ${money(price)} at ${v.winner.shop}, ${money(Number(e.saved))} under your max. The ${money(Number(e.bounty))} bounty goes to its developer.`, 'good');
         break;
       }
+      case 'recorded':
+        say(e.store === 'Elastic' ? 'Deal saved to the verified-deal history in Elasticsearch.' : `Deal saved to this server's memory (${e.note ?? 'no Elastic keys'}).`);
+        break;
+      case 'alert':
+        say(e.sent ? '"Deal found" alert sent through Zapier.' : `Zapier alert not sent: ${e.note}.`);
+        break;
+      case 'notice':
+        say(e.message);
+        break;
       case 'no_winner':
         v.noWinner = e.reason;
         say(`No winner: ${e.reason}. Nobody is paid.`, 'bad');
