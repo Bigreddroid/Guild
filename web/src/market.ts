@@ -26,6 +26,7 @@ export interface MarketView {
   attempts: Attempt[]; blocked: Record<string, string[]>; unfunded: Record<string, string>;
   budget: number; spent: number; done: boolean; story: string[];
   links: Record<number, string>; // story line index -> live view URL
+  payment: GuildEvent | null;
 }
 
 export const AGENT_NAMES: Record<string, string> = {
@@ -37,7 +38,7 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 export function emptyView(budget: number): MarketView {
   return {
     goal: '', lead: '', reviewer: '', jobs: [], bids: [], settlements: [], agents: [], attempts: [],
-    blocked: {}, unfunded: {}, budget, spent: 0, done: false, story: [], links: {},
+    blocked: {}, unfunded: {}, budget, spent: 0, done: false, story: [], links: {}, payment: null,
   };
 }
 
@@ -128,8 +129,17 @@ export function reduce(events: GuildEvent[], budget: number): MarketView {
         v.done = true;
         v.story.push(`Run stopped: ${e.message}. No money moved.`);
         break;
+      case 'payment': {
+        v.payment = e;
+        const pays = (e.payouts ?? []).map((p: any) => `${p.to} $${p.amount}`).join(', ');
+        if (e.mode === 'error') v.story.push(`PayPal: ${e.message}${e.debug_id ? ` (debug id ${e.debug_id})` : ''}.`);
+        else if (e.voided) v.story.push(`PayPal: nothing passed, authorization voided; $${e.released} released to the buyer.`);
+        else if (e.mode === 'sandbox') v.story.push(`PayPal sandbox: captured $${e.captured} of the $${e.authorized} hold, released $${e.released}; payout batch ${e.payout_batch_id} to ${pays}.`);
+        else v.story.push(`PayPal preview: would capture $${e.captured} of $${e.authorized}, release $${e.released}, pay ${pays || 'nobody'}.`);
+        break;
+      }
       case 'done':
-        v.done = true; v.spent = Number(e.spent);
+        v.done = true; v.spent = Number(e.spent); v.budget = Number(e.budget);
         v.story.push(`Done: ${money(Number(e.spent))} of ${money(Number(e.budget))} spent; the rest goes back to the buyer.`);
         break;
     }

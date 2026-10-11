@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 import uuid
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
@@ -24,12 +25,13 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from guild import vendor
+from guild import funding, vendor
 from guild.agents import agent_modes, default_agents
 from guild.lead import DEMO_GOAL
+from guild.paypal import PayPalError
 from guild.run import run
 
 MAX_RUNS = 50                    # runs kept in memory for replay
@@ -92,11 +94,18 @@ class Run:
         self.events.append(json.loads(json.dumps(event, default=str)))
 
 
-def create_app(brain=None) -> FastAPI:
-    """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set."""
+_NOT_SET = object()
+
+
+def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None) -> FastAPI:
+    """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
+    `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
 
     make_brain = brain or default_brain
+    paypal = funding.paypal_from_env() if paypal is _NOT_SET else paypal
+    public_url = public_url if public_url is not None else funding.public_base_url()
+    funds = funding.Funds(paypal) if paypal else None
     app = FastAPI(title="Guild", docs_url="/api/docs", openapi_url="/api/openapi.json")
     runs: OrderedDict = OrderedDict()
     limiter = RateLimiter()
@@ -105,14 +114,56 @@ def create_app(brain=None) -> FastAPI:
     def running() -> int:
         return sum(1 for r in runs.values() if not r.done)
 
-    def execute(r: Run, budget: Decimal) -> None:
+    def execute(r: Run, run_id: str, budget: Decimal, authorization_id: Optional[str]) -> None:
         try:
             lead, reviewer = make_brain()
-            run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
-        except Exception as exc:  # report, never crash the server; no money moves on error
+            result = run(DEMO_GOAL, budget, default_agents(), lead, reviewer, r.emit)
+            if authorization_id:
+                r.emit(funding.settle(paypal, run_id, authorization_id, budget, result["spent"], result["owed"]))
+            else:
+                r.emit(funding.preview(budget, result["spent"], result["owed"]))
+        except Exception as exc:  # report, never crash the server
             r.emit({"type": "error", "message": f"run failed: {type(exc).__name__}"})
+            if authorization_id:  # the run broke: release the buyer's hold, take nothing
+                try:
+                    paypal.void(authorization_id)
+                    r.emit({"type": "payment", "mode": "sandbox", "voided": True, "captured": "0.00",
+                            "released": f"{budget:.2f}", "authorized": f"{budget:.2f}", "payouts": []})
+                except Exception as void_exc:
+                    r.emit({"type": "payment", "mode": "error",
+                            "message": f"void failed: {type(void_exc).__name__}; the hold expires on its own"})
         finally:
             r.done = True
+
+    def start_run(budget: Decimal, authorization_id: Optional[str] = None) -> str:
+        r = Run()
+        run_id = uuid.uuid4().hex[:12]
+        with lock:
+            # Funded runs always start: the buyer already approved and money is on hold.
+            if authorization_id is None and running() >= MAX_CONCURRENT:  # each run can spend AI calls
+                raise HTTPException(429, "the market is busy; try again in a few seconds")
+            runs[run_id] = r
+            while len(runs) > MAX_RUNS:
+                oldest = next(iter(runs))
+                if not runs[oldest].done:
+                    break
+                runs.pop(oldest)
+        threading.Thread(target=execute, args=(r, run_id, budget, authorization_id), daemon=True).start()
+        return run_id
+
+    async def read_json(request: Request) -> dict:
+        if int(request.headers.get("content-length") or 0) > 4096:
+            raise HTTPException(413, "body too large")
+        raw = await request.body()
+        if not raw:
+            return {}
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            raise HTTPException(400, "body must be JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be a JSON object")
+        return body
 
     @app.get(vendor.PATH, include_in_schema=False)
     def vendor_page(passengers: Optional[str] = None, date: Optional[str] = None):
@@ -126,38 +177,53 @@ def create_app(brain=None) -> FastAPI:
         lead, reviewer = make_brain()
         return {"ok": True, "lead": lead.label, "reviewer": reviewer.label,
                 "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes(),
-                "payments": "not connected"}
+                "payments": "PayPal sandbox" if paypal else "preview only (no PayPal keys)",
+                "funding": bool(funds and public_url)}
 
     @app.post("/api/runs")
     async def create_run(request: Request):
         client = request.client.host if request.client else "unknown"
         if not limiter.allow(client):
             raise HTTPException(429, "too many runs; wait a minute")
-        body = {}
-        if int(request.headers.get("content-length") or 0) > 4096:
-            raise HTTPException(413, "body too large")
-        raw = await request.body()
-        if raw:
-            try:
-                body = json.loads(raw)
-            except ValueError:
-                raise HTTPException(400, "body must be JSON")
-            if not isinstance(body, dict):
-                raise HTTPException(400, "body must be a JSON object")
-        budget = _parse_budget(body.get("budget"))
-        r = Run()
-        run_id = uuid.uuid4().hex[:12]
-        with lock:
-            if running() >= MAX_CONCURRENT:  # each run can spend AI calls
-                raise HTTPException(429, "the market is busy; try again in a few seconds")
-            runs[run_id] = r
-            while len(runs) > MAX_RUNS:
-                oldest = next(iter(runs))
-                if not runs[oldest].done:
-                    break
-                runs.pop(oldest)
-        threading.Thread(target=execute, args=(r, budget), daemon=True).start()
-        return {"run_id": run_id}
+        budget = _parse_budget((await read_json(request)).get("budget"))
+        return {"run_id": start_run(budget)}
+
+    @app.post("/api/fund")
+    async def fund(request: Request):
+        """Start a PayPal-funded run: returns the sandbox approval link for the budget."""
+        if funds is None:
+            raise HTTPException(503, "PayPal sandbox is not configured on this server")
+        if not public_url:
+            raise HTTPException(503, "no public https URL for PayPal to return to")
+        client = request.client.host if request.client else "unknown"
+        if not limiter.allow(client):
+            raise HTTPException(429, "too many runs; wait a minute")
+        budget = _parse_budget((await read_json(request)).get("budget"))
+        try:
+            _, url = funds.start(budget, public_url)
+        except (PayPalError, funding.FundingError) as exc:
+            raise HTTPException(502, f"PayPal: {exc}")
+        return {"approve_url": url}
+
+    def back_home(error: str = "", run_id: str = "") -> RedirectResponse:
+        query = urllib.parse.urlencode({"run": run_id} if run_id else {"payment_error": error[:200]})
+        return RedirectResponse(f"/?{query}", status_code=303)
+
+    @app.get("/api/paypal/return", include_in_schema=False)
+    def paypal_return(fund: str = "", token: str = ""):
+        if funds is None:
+            return back_home("PayPal is not configured")
+        try:
+            budget, authorization_id = funds.complete(fund, token)
+        except (PayPalError, funding.FundingError) as exc:
+            return back_home(f"payment not authorized: {exc}")
+        return back_home(run_id=start_run(budget, authorization_id))
+
+    @app.get("/api/paypal/cancel", include_in_schema=False)
+    def paypal_cancel(fund: str = ""):
+        if funds is not None:
+            funds.cancel(fund)
+        return back_home("payment cancelled; nothing was charged")
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):

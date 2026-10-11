@@ -12,7 +12,7 @@ export default function App() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState('');
   const [mode, setMode] = useState<'view' | 'edit'>('view');
-  const [health, setHealth] = useState<Record<string, string> | null>(null);
+  const [health, setHealth] = useState<Record<string, any> | null>(null);
   const source = useRef<EventSource | null>(null);
   const runBudget = useRef(3);
 
@@ -20,34 +20,62 @@ export default function App() {
     [events, budget]);
   const data = useMemo(() => studioData(view), [view]);
 
-  const start = useCallback(async () => {
+  const attach = useCallback((runId: string) => {
     source.current?.close();
+    const es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+    source.current = es;
+    setStatus('live');
+    const onEvent = (msg: MessageEvent) => setEvents(prev => [...prev, JSON.parse(msg.data)]);
+    for (const t of ['plan', 'bids', 'awarded', 'work', 'settled', 'blocked', 'unfunded', 'done', 'error', 'payment']) {
+      es.addEventListener(t, onEvent as EventListener);
+    }
+    es.addEventListener('end', () => { es.close(); setStatus('done'); });
+    es.onerror = () => { if (es.readyState === EventSource.CLOSED) return; es.close(); setStatus(s => (s === 'done' ? s : 'error')); setError('Stream interrupted. Run again.'); };
+  }, []);
+
+  const post = async (path: string) => {
+    const r = await fetch(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ budget }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.detail ?? `HTTP ${r.status}`);
+    return body;
+  };
+
+  const start = useCallback(async () => {
     setStatus('starting'); setError(''); setEvents([]);
     try {
-      const r = await fetch('/api/runs', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ budget }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.detail ?? `HTTP ${r.status}`);
+      const body = await post('/api/runs');
       runBudget.current = Number(budget);
-      const es = new EventSource(`/api/runs/${body.run_id}/events`);
-      source.current = es;
-      setStatus('live');
-      es.onmessage = null;
-      const onEvent = (msg: MessageEvent) => setEvents(prev => [...prev, JSON.parse(msg.data)]);
-      for (const t of ['plan', 'bids', 'awarded', 'work', 'settled', 'blocked', 'unfunded', 'done', 'error']) {
-        es.addEventListener(t, onEvent as EventListener);
-      }
-      es.addEventListener('end', () => { es.close(); setStatus('done'); });
-      es.onerror = () => { if (es.readyState === EventSource.CLOSED) return; es.close(); setStatus(s => (s === 'done' ? s : 'error')); setError('Stream interrupted. Run again.'); };
+      attach(body.run_id);
     } catch (e) {
       setStatus('error'); setError(e instanceof Error ? e.message : String(e));
     }
-  }, [budget]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budget, attach]);
+
+  // Funded run: PayPal sandbox approval first; PayPal sends the buyer back to /?run=<id>.
+  const fund = async () => {
+    setStatus('starting'); setError('');
+    try {
+      const body = await post('/api/fund');
+      window.location.assign(body.approve_url);
+    } catch (e) {
+      setStatus('error'); setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   useEffect(() => {
     fetch('/healthz').then(r => r.json()).then(setHealth).catch(() => setHealth(null));
-    start();
+    const params = new URLSearchParams(window.location.search);
+    const runId = params.get('run');
+    const payError = params.get('payment_error');
+    if (runId || payError) window.history.replaceState(null, '', '/');
+    if (runId && /^[0-9a-f]{12}$/.test(runId)) attach(runId);  // back from PayPal: watch the funded run
+    else {
+      start();
+      if (payError) setError(payError);  // after start(), which clears old errors
+    }
     return () => source.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -70,6 +98,12 @@ export default function App() {
             <input inputMode="decimal" value={budget} onChange={e => setBudget(e.target.value)} aria-label="Budget in US dollars" />
           </label>
           <button type="submit" disabled={busy}>{busy ? 'Running…' : 'Run the market'}</button>
+          {health?.funding && (
+            <button type="button" className="paypal" disabled={busy} onClick={fund}
+              title="Approve the budget in PayPal sandbox; only work that passes review is captured">
+              Fund with PayPal (sandbox)
+            </button>
+          )}
         </form>
       </header>
 

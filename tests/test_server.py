@@ -17,9 +17,13 @@ def offline():
     return ScriptedLead(), RuleReviewer()
 
 
+def done(events):
+    return next(e for e in events if e["type"] == "done")
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
-        self.c = TestClient(create_app(brain=offline))
+        self.c = TestClient(create_app(brain=offline, paypal=None))
 
     def run_events(self, **kw):
         r = self.c.post("/api/runs", **kw)
@@ -41,13 +45,15 @@ class ServerTests(unittest.TestCase):
         _, events = self.run_events(json={"budget": "3.00"})
         types = [e["type"] for e in events]
         self.assertEqual(types[0], "plan")
-        self.assertEqual(types[-1], "done")
+        self.assertEqual(types[-2:], ["done", "payment"])
+        self.assertEqual(events[-1]["mode"], "preview")
+        self.assertEqual((events[-1]["captured"], events[-1]["released"]), ("2.00", "1.00"))
         settled = [e for e in events if e["type"] == "settled"]
         self.assertIn("unpaid", [e["outcome"] for e in settled])  # CheapBot's junk
-        self.assertEqual(events[-1]["spent"], "2.00")
+        self.assertEqual(done(events)["spent"], "2.00")
 
     def test_empty_body_uses_default_budget(self):
-        self.assertEqual(self.run_events()[1][-1]["budget"], "3.00")
+        self.assertEqual(done(self.run_events()[1])["budget"], "3.00")
 
     def test_bad_budgets_are_rejected(self):
         for b in ("0", "-1", "11", "abc", "NaN", "Infinity", None):
@@ -61,7 +67,7 @@ class ServerTests(unittest.TestCase):
     def test_small_budget_leaves_jobs_unfunded(self):
         _, events = self.run_events(json={"budget": 0.5})
         self.assertTrue(any(e["type"] == "unfunded" for e in events))
-        self.assertLessEqual(float(events[-1]["spent"]), 0.5)
+        self.assertLessEqual(float(done(events)["spent"]), 0.5)
 
     def test_stream_replays_every_event_then_end(self):
         run_id, events = self.run_events()
@@ -81,10 +87,11 @@ class ServerTests(unittest.TestCase):
             label = "broken"
             def review(self, job, output):
                 raise RuntimeError("down")
-        c = TestClient(create_app(brain=lambda: (ScriptedLead(), Broken())))
+        c = TestClient(create_app(brain=lambda: (ScriptedLead(), Broken()), paypal=None))
         self.c = c
         _, events = self.run_events()
-        self.assertEqual(events[-1]["spent"], "0")
+        self.assertEqual(done(events)["spent"], "0")
+        self.assertEqual(events[-1]["captured"], "0.00")
         self.assertTrue(all(e["outcome"] == "held" for e in events if e["type"] == "settled"))
 
     def test_a_crashing_lead_reports_an_error_event(self):
@@ -92,7 +99,7 @@ class ServerTests(unittest.TestCase):
             label = "broken"
             def plan(self, goal):
                 raise RuntimeError("down")
-        self.c = TestClient(create_app(brain=lambda: (Broken(), RuleReviewer())))
+        self.c = TestClient(create_app(brain=lambda: (Broken(), RuleReviewer()), paypal=None))
         _, events = self.run_events()
         self.assertEqual(events, [{"type": "error", "message": "run failed: RuntimeError"}])
 
@@ -104,7 +111,7 @@ class ServerTests(unittest.TestCase):
             def plan(self, goal):
                 gate.wait(5)
                 return ScriptedLead().plan(goal)
-        c = TestClient(create_app(brain=lambda: (Slow(), RuleReviewer())))
+        c = TestClient(create_app(brain=lambda: (Slow(), RuleReviewer()), paypal=None))
         codes = [c.post("/api/runs").status_code for _ in range(4)]
         gate.set()
         self.assertEqual(codes, [200, 200, 200, 429])
