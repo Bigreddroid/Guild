@@ -1,4 +1,8 @@
-"""Run the demo goal in the terminal: python3 -m guild"""
+"""Run a demo in the terminal.
+
+    python3 -m guild          the agent job market (offsite demo)
+    python3 -m guild hunt     a deal bounty: agents hunt, Guild verifies, the best real deal wins
+"""
 from decimal import Decimal
 
 from guild.agents import default_agents
@@ -27,6 +31,32 @@ def narrate(e):
         print(f"\nDONE  spent ${e['spent']} of ${e['budget']} · pay owners: {e['owed']}")
 
 
+def narrate_hunt(e):
+    t = e["type"]
+    if t == "want":
+        print(f"WANT  {e['title']}  (bounty ${e['bounty']}, deadline {e['deadline_s']:.0f}s)")
+        for a in e["agents"]:
+            print(f"      {a['name']:<10} {a['tool']:<18} {a['mode']:<9} {a['stars']}★  up to {a['max_claims']} claims")
+    elif t == "claim":
+        mark = "✓" if e["valid"] else "✗"
+        print(f"  {mark} {e['agent_id']:<10} claimed ${e['claimed']:<8} {e['url'][:60]}")
+        print(f"      page: {('$' + e['page_price']) if e['page_price'] else '-':<9} {'; '.join(e['reasons'])}  ->  {e['stars_after']}★")
+    elif t == "winner":
+        print(f"\nWINNER  {e['agent_id']} found it for ${e['price']} (saves ${e['saved']}); bounty ${e['bounty']} to its developer")
+    elif t == "no_winner":
+        print(f"\nNO WINNER  {e['reason']}; the bounty is not charged")
+    elif t == "agent_error":
+        print(f"  ! {e['agent_id']} failed: {e['error']}")
+
+
 if __name__ == "__main__":
-    lead, reviewer = default_brain()
-    run(DEMO_GOAL, Decimal("3.00"), default_agents(), lead, reviewer, narrate)
+    import sys
+    if sys.argv[1:2] == ["hunt"]:
+        from guild.fetcher import SafeFetcher
+        from guild.hunt import run_hunt
+        from guild.hunters import default_hunters
+        from guild.shops import DEMO_WANT, serve
+        run_hunt(DEMO_WANT, default_hunters(), SafeFetcher(local=serve), narrate_hunt, deadline_s=30, speed=0.3)
+    else:
+        lead, reviewer = default_brain()
+        run(DEMO_GOAL, Decimal("3.00"), default_agents(), lead, reviewer, narrate)
