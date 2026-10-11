@@ -42,6 +42,63 @@ class Want:
     bounty: Decimal = Decimal("0")
 
 
+class WantError(ValueError):
+    pass
+
+
+MAX_ITEM_PRICE = Decimal("5000")
+_TERM = re.compile(r"^[^<>\"`]{1,40}$")
+_COUNTRY = re.compile(r"^[A-Z]{2}$")
+
+
+def _terms(raw, field_name: str, most: int) -> tuple:
+    if isinstance(raw, str):
+        raw = [t for t in raw.split(",")]
+    if not isinstance(raw, (list, tuple)) or len(raw) > most:
+        raise WantError(f"{field_name}: up to {most} words or phrases")
+    out = []
+    for t in raw:
+        t = str(t).strip() if isinstance(t, (str, int, float)) else ""
+        if not t:
+            continue
+        if not _TERM.match(t) or not re.search(r"[A-Za-z0-9]", t):
+            raise WantError(f"{field_name}: each term is 1-40 characters with a letter or digit")
+        if t.lower() not in (o.lower() for o in out):
+            out.append(t)
+    return tuple(out)
+
+
+def parse_want(body: dict, bounty: Decimal, default: Want, want_id: str) -> Want:
+    """A buyer's want from a request body; any field left out comes from `default`.
+    Raises WantError with a message fit to show the buyer."""
+    if not any(k in body for k in ("must_have", "must_not", "max_price", "ship_to", "title")):
+        return Want(**{**default.__dict__, "id": want_id, "bounty": bounty})
+    must_have = _terms(body.get("must_have", list(default.must_have)), "must_have", 6)
+    if not must_have:
+        raise WantError("must_have: at least one word the product name must contain")
+    must_not = _terms(body.get("must_not", list(default.must_not)), "must_not", 8)
+    if {t.lower() for t in must_have} & {t.lower() for t in must_not}:
+        raise WantError("a term can't be both a must-have and a must-not")
+    try:
+        raw = body.get("max_price", default.max_price)
+        max_price = Decimal(str(raw).strip()) if isinstance(raw, (str, int, float, Decimal)) and not isinstance(raw, bool) else None
+    except InvalidOperation:
+        max_price = None
+    if max_price is None or not max_price.is_finite() or max_price <= 0 or max_price > MAX_ITEM_PRICE:
+        raise WantError(f"max_price: a price above 0 and at most {MAX_ITEM_PRICE}")
+    ship_to = str(body.get("ship_to", default.ship_to)).strip().upper()
+    if not _COUNTRY.match(ship_to):
+        raise WantError("ship_to: a two-letter country code, like US or IN")
+    allow = body.get("allow_unknown_shipping", default.allow_unknown_shipping)
+    title = " ".join(str(body.get("title") or "").split())[:120]
+    if not title or "<" in title or ">" in title:
+        extra = f", not {'/'.join(must_not)}" if must_not else ""
+        title = f"{' '.join(must_have)}{extra}, under ${max_price.normalize():f}, ship to {ship_to}"
+    return Want(id=want_id, title=title, must_have=must_have, must_not=must_not,
+                max_price=max_price.quantize(Decimal("0.01")), currency=default.currency, ship_to=ship_to,
+                allow_unknown_shipping=allow is True, bounty=bounty)
+
+
 @dataclass(frozen=True)
 class Claim:
     id: str

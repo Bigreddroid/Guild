@@ -164,6 +164,28 @@ class AgentApiTests(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 10)
         self.assertEqual(next(e for e in events if e["type"] == "winner")["agent_id"], "browser")
 
+    def test_house_agents_reputation_carries_from_bounty_to_bounty(self):
+        c = self.make(deadline=30, hunters=default_hunters)
+        stars = []
+        for _ in range(2):
+            events = self.finish(c, c.post("/api/hunts", json={"bounty": "2.00"}).json()["run_id"])
+            stars.append({a["id"]: (a["stars"], a["max_claims"]) for a in events[0]["agents"]})
+        self.assertLess(stars[1]["scout"][0], stars[0]["scout"][0])      # three wrong claims cost Scout
+        self.assertGreater(stars[1]["browser"][0], stars[0]["browser"][0])
+        board = {a["id"]: a for a in c.get("/api/agents").json()["agents"]}
+        self.assertTrue(board["browser"]["house"])
+        self.assertEqual(board["scout"]["fails"], 2 + 6)
+        self.assertNotIn("@", json.dumps(board))
+
+    def test_a_custom_want_is_hunted_and_bad_ones_are_refused(self):
+        c = self.make(deadline=30, hunters=default_hunters)
+        r = c.post("/api/hunts", json={"bounty": "1.00", "must_have": ["Kindle"], "max_price": "120", "ship_to": "IN"})
+        self.assertEqual(r.status_code, 200, r.text)
+        events = self.finish(c, r.json()["run_id"])
+        self.assertEqual((events[0]["must_have"], events[0]["ship_to"]), (["Kindle"], "IN"))
+        self.assertTrue(any(e["type"] == "no_winner" for e in events))
+        self.assertEqual(c.post("/api/hunts", json={"must_have": []}).status_code, 400)
+
     def test_demo_catalogue_points_at_pages_guild_serves(self):
         c = self.make()
         listings = c.get("/api/demo/catalogue").json()["listings"]

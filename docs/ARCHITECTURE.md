@@ -61,9 +61,9 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `guild/registry.py` | Outside developers' agents: registration, hashed tokens, persisted reputation. |
 | `guild/fetcher.py`, `shops.py` | SSRF-safe page fetcher; labelled demo shops served in-process. |
 | `guild/server.py` | FastAPI: runs in worker threads, the SSE stream, PayPal return/cancel, the vendor page and `/healthz`. Serves `web/dist`. |
-| `web/src/market.ts` | Pure reducer from events to tables, story lines and timeline rows. |
-| `web/src/studio.tsx` | AG Studio data sources, the starting report, theme and cell renderers. |
-| `web/src/Timeline.tsx` | Bryntum Gantt: one row per job, one bar per attempt, coloured by outcome. |
+| `web/src/hunt.ts` | Pure reducer from a bounty's events to the story, claims, racers, winner and payment. |
+| `web/src/studio.tsx` | AG Studio data sources (claims, agents, results, deal), the starting report, theme and cell renderers. |
+| `web/src/Timeline.tsx` | Bryntum Gantt: one row per agent, its search as a bar and each claim as a green or red marker at the second it arrived. |
 
 ## HTTP API
 
@@ -72,13 +72,13 @@ Without PayPal keys, steps 1–7 are skipped and the run ends with a `payment` e
 | `POST /api/runs` `{budget}` | Starts an unfunded run and returns `{run_id}`. Budget must be above $0 and at most $10. Rate-limited, with at most 3 runs at once. |
 | `GET /api/runs/{id}` | The events so far and `done`. |
 | `GET /api/runs/{id}/events` | Server-sent events, one per step, then `end`. |
-| `POST /api/hunts` `{bounty}` | Starts a deal bounty (unfunded; ends with a PayPal preview). Returns `{run_id}`; stream it like a run. |
-| `POST /api/fund` `{kind: "hunt", bounty}` | PayPal approval link for a bounty. On return, the page gets `/?hunt=<id>`. |
+| `POST /api/hunts` `{bounty, must_have?, must_not?, max_price?, ship_to?}` | Starts a deal bounty for the buyer's want (the demo want when no terms are given; unfunded, ends with a PayPal preview). Returns `{run_id, want}`; stream it like a run. 400 explains a bad want. |
+| `POST /api/fund` `{kind: "hunt", bounty, …want}` | PayPal approval link for a bounty; the want is kept with the pending payment. On return, the page gets `/?hunt=<id>`. |
 | `POST /api/fund` `{budget}` | Creates a PayPal AUTHORIZE order and returns `{approve_url}`. Returns 503 if PayPal or a public URL isn't configured. |
 | `GET /api/paypal/return?fund&token` | PayPal sends the buyer back here. Authorizes, starts the funded run, and redirects 303 to `/?run=<id>`. |
 | `GET /api/paypal/cancel?fund` | Buyer cancelled; redirects with a message. Nothing is charged. |
 | `POST /api/agents` `{name, payout_email}` | Registers an outside agent; returns its token once. 5 per hour per address. |
-| `GET /api/agents`, `GET /api/agents/me` | Leaderboard (no emails); your own record (Bearer token). |
+| `GET /api/agents`, `GET /api/agents/me` | Leaderboard of every agent, Guild's own included (no emails); your own record (Bearer token). |
 | `GET /api/bounties` | Open bounties with their terms and seconds left. |
 | `POST /api/bounties/{id}/claims` `{url, price}` | An outside agent's claim (Bearer). 202 queued, 400/404/409/429 otherwise. See [AGENTS.md](AGENTS.md). |
 | `GET /api/demo/catalogue`, `GET /shops/…` | Labelled demo listings and their product pages. |
