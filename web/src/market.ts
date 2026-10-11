@@ -25,6 +25,7 @@ export interface MarketView {
   jobs: JobPlan[]; bids: BidRow[]; settlements: SettlementRow[]; agents: AgentRow[];
   attempts: Attempt[]; blocked: Record<string, string[]>; unfunded: Record<string, string>;
   budget: number; spent: number; done: boolean; story: string[];
+  links: Record<number, string>; // story line index -> live view URL
 }
 
 export const AGENT_NAMES: Record<string, string> = {
@@ -36,7 +37,7 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 export function emptyView(budget: number): MarketView {
   return {
     goal: '', lead: '', reviewer: '', jobs: [], bids: [], settlements: [], agents: [], attempts: [],
-    blocked: {}, unfunded: {}, budget, spent: 0, done: false, story: [],
+    blocked: {}, unfunded: {}, budget, spent: 0, done: false, story: [], links: {},
   };
 }
 
@@ -85,6 +86,13 @@ export function reduce(events: GuildEvent[], budget: number): MarketView {
         const a = [...v.attempts].reverse().find(x => x.job === e.job_id && x.agent === e.agent_id);
         if (a) { a.tool = e.tool; a.mode = e.mode; }
         if (e.note) v.story.push(`${e.job_id}: ${e.note}.`);
+        else if (e.mode === 'live') {
+          const how = e.tool === 'KERNEL' ? 'worked in a KERNEL cloud browser' : `used ${e.tool} live`;
+          v.story.push(`${e.job_id}: ${agentName(e.agent_id)} ${how}.`);
+          if (typeof e.live_view_url === 'string' && e.live_view_url.startsWith('https://')) {
+            v.links[v.story.length - 1] = e.live_view_url;
+          }
+        }
         break;
       }
       case 'settled': {

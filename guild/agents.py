@@ -3,7 +3,7 @@ work with a sponsor tool:
 
     sourcer       Channel3 product search
     researcher    Elastic search over venue and job documents
-    web_operator  KERNEL cloud browser
+    web_operator  KERNEL cloud browser on Guild's demo vendor page
     doer          Zapier actions (email, calendar)
     cheapbot      a deliberately careless agent, so the demo shows unpaid bad work
 
@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import functools
 import os
-from decimal import Decimal
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from guild.market import AgentCard, Bid, Job
@@ -91,11 +92,62 @@ class Researcher(Agent):
 
 
 class WebOperator(Agent):
+    """Drives a KERNEL cloud browser through Guild's demo vendor page."""
     tool, price, eta_s = "KERNEL", D("0.50"), 150
+
+    def __init__(self, card: AgentCard, kernel=None, vendor_url: str = ""):
+        super().__init__(card)
+        self.kernel, self.vendor_url = kernel, vendor_url
+
+    def work(self, job: Job) -> dict:
+        if self.kernel is None or not self.vendor_url:
+            return super().work(job)
+        from guild.vendor import script
+        session = None
+        try:
+            session = self.kernel.create_browser()
+            result = self.kernel.execute(session["session_id"], script(self.vendor_url), timeout_sec=60)
+            items = _clean_quotes(result)
+            out = {"mode": "live", "tool": self.tool, "items": items}
+            if isinstance(session.get("browser_live_view_url"), str) and session["browser_live_view_url"].startswith("https://"):
+                out["live_view_url"] = session["browser_live_view_url"][:500]
+            return out
+        except Exception as exc:  # never crash a run; say plainly that this is sample data
+            out = super().work(job)
+            out["note"] = f"KERNEL unavailable ({exc}); sample data"
+            return out
+        finally:
+            if session:
+                try:
+                    self.kernel.delete_browser(session["session_id"])
+                except Exception:
+                    pass  # the session also ends itself after its inactivity timeout
 
     def sample(self, job):
         return [{"provider": "Lisbon Transfers", "price": "96", "pickup": "09:30"},
                 {"provider": "Airport Shuttle Co", "price": "72", "pickup": "10:15"}]
+
+
+_TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _clean_quotes(result) -> list:
+    """Keep only well-formed quotes from the browser; text is third-party, so trim it."""
+    rows = []
+    for r in result if isinstance(result, list) else []:
+        if not isinstance(r, dict):
+            continue
+        provider, price, pickup = r.get("provider"), r.get("price"), r.get("pickup")
+        if not isinstance(provider, str) or not provider.strip() or not isinstance(pickup, str):
+            continue
+        try:
+            amount = Decimal(str(price))
+        except (InvalidOperation, ValueError):
+            continue
+        if not amount.is_finite() or amount <= 0 or not _TIME.match(pickup.strip()):
+            continue
+        rows.append({"provider": provider.strip()[:100], "price": str(amount), "pickup": pickup.strip()})
+    return rows[:10]
 
 
 class Doer(Agent):
@@ -113,7 +165,7 @@ class CheapBot(Agent):
         return [{"title": "notebook"}]
 
 
-def default_agents(channel3=None) -> dict:
+def default_agents(channel3=None, kernel=None, vendor_url=None) -> dict:
     """The demo roster. The Sourcer searches Channel3 live when given a client
     (default: from CHANNEL3_API_KEY), otherwise it returns labelled sample data."""
     if channel3 is None:
@@ -127,7 +179,25 @@ def default_agents(channel3=None) -> dict:
     ]
     agents = {card.id: cls(card) for cls, card in cards}
     agents["sourcer"].channel3 = channel3
+    if kernel is None:
+        kernel = _env_kernel(os.environ.get("KERNEL_API_KEY", ""))
+    agents["web_operator"].kernel = kernel
+    agents["web_operator"].vendor_url = vendor_url if vendor_url is not None else public_vendor_url()
     return agents
+
+
+def public_vendor_url() -> str:
+    """The demo vendor page as the cloud browser must reach it. Render sets
+    RENDER_EXTERNAL_URL; a cloud browser can't reach localhost, so no URL, no live run."""
+    from guild.vendor import PATH
+    base = os.environ.get("GUILD_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or ""
+    return base.rstrip("/") + PATH if base.startswith("https://") else ""
+
+
+@functools.lru_cache(maxsize=2)
+def _env_kernel(key: str):
+    from guild.kernel import BASE_URL, Kernel
+    return Kernel(key, os.environ.get("KERNEL_BASE_URL", BASE_URL)) if key else None
 
 
 @functools.lru_cache(maxsize=2)
@@ -140,4 +210,6 @@ def _env_channel3(key: str):
 def agent_modes() -> dict:
     """Which agents use their real tool right now (for /healthz and the page)."""
     return {"sourcer": "live (Channel3)" if os.environ.get("CHANNEL3_API_KEY") else "simulated",
-            "researcher": "simulated", "web_operator": "simulated", "doer": "simulated"}
+            "researcher": "simulated",
+            "web_operator": "live (KERNEL)" if os.environ.get("KERNEL_API_KEY") and public_vendor_url() else "simulated",
+            "doer": "simulated"}

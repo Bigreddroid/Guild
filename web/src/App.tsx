@@ -86,7 +86,12 @@ export default function App() {
       <main className="grid">
         <section className="panel story" aria-label="What happened">
           <h2>What happened</h2>
-          <ol>{view.story.map((s, i) => <li key={i} className={/not paid|failed/.test(s) ? 'bad' : /paid \$/.test(s) ? 'good' : ''}>{s}</li>)}</ol>
+          <ol>{view.story.map((s, i) => (
+            <li key={i} className={/not paid|failed/.test(s) ? 'bad' : /paid \$/.test(s) ? 'good' : ''}>
+              {s}
+              {view.links[i] && <> <a href={view.links[i]} target="_blank" rel="noopener noreferrer">Watch live ↗</a></>}
+            </li>
+          ))}</ol>
           {!view.story.length && <p className="muted">Waiting for the first event…</p>}
         </section>
 
