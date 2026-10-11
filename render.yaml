@@ -24,5 +24,7 @@ services:
         sync: false
       - key: ELASTIC_URL
         sync: false
+      - key: ZAPIER_HOOK_URL
+        sync: false
       - key: ELASTIC_API_KEY
         sync: false
