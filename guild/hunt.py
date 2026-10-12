@@ -29,7 +29,8 @@ class OpenHunt:
 
 def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadline_s: float = 60.0,
              clock: Callable = time.monotonic, sleep: Callable = time.sleep, speed: float = 1.0,
-             door: "OpenHunt | None" = None, close_early: bool = True, on_winner: Callable | None = None) -> dict:
+             door: "OpenHunt | None" = None, close_early: bool = True, on_winner: Callable | None = None,
+             trust=None) -> dict:
     """`speed` scales the simulated agents' hunting time (0 = instant, for tests).
     `door` lets outside agents claim while the hunt is open. With close_early the
     hunt ends once Guild's own agents are done; otherwise it stays open to the
@@ -95,7 +96,7 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
                 price = None
             c = Claim(id=f"{want.id}-c{n}", want_id=want.id, agent_id=agent_id, url=url,
                       price=price or Decimal("0"), currency=want.currency, at=at)
-            v = verify(want, c, fetch) if price is not None else Verdict(c, False, ["claimed price is not a number"])
+            v = verify(want, c, fetch, trust) if price is not None else Verdict(c, False, ["claimed price is not a number"])
             verdicts.append(v)
             if v.valid:
                 card.passes += 1
@@ -104,7 +105,7 @@ def run_hunt(want: Want, hunters: dict, fetch: Callable, emit: Callable, deadlin
             emit({"type": "claim", "claim_id": c.id, "agent_id": agent_id, "agent_name": card.name, "url": url, "claimed": str(c.price),
                   "page_price": str(v.offer.price) if v.offer and v.offer.price else None,
                   "page_name": v.offer.name[:160] if v.offer else None, "valid": v.valid, "reasons": v.reasons,
-                  "stars_after": card.stars, "at": at, "outside": kind == "external"})
+                  "stars_after": card.stars, "at": at, "outside": kind == "external", "checks": v.checks})
 
     if door:
         door.closed.set()

@@ -71,7 +71,7 @@ Each verified deal is saved to an **Elasticsearch** history, and a **Zapier** "d
 
 - A full money loop on PayPal sandbox: hold → verify → capture → pay the finder, or void.
 - A real two-sided market: a starter agent written by "someone else" registered, claimed and won a bounty against the running server.
-- 180 tests, plus a real-browser walkthrough at desktop and phone width.
+- 193 tests, plus a real-browser walkthrough at desktop and phone width.
 
 ## What we learned
 
