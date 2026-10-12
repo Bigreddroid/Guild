@@ -1,5 +1,10 @@
 """The wallet's rules: what an AI agent may buy with its owner's money.
 
+The wallet is prepaid. The owner loads money into it with PayPal (a top-up) and
+the agent can only ever spend what is loaded: there is no card on file to run up.
+Whatever is not spent goes back to the owner (withdraw, or automatically when the
+wallet closes). The policy's budget is the most the wallet may hold.
+
 The owner sets a Policy once: a budget, the most one purchase may cost, the amount
 above which they want to approve each purchase, and the want itself (what to buy,
 what not to buy, max price, ship-to). The agent can only ask to buy; the wallet
@@ -133,13 +138,50 @@ class Purchase:
 
 
 class Wallet:
-    def __init__(self, wallet_id: str, agent_id: str, policy: Policy):
+    def __init__(self, wallet_id: str, agent_id: str, policy: Policy, funded: Optional[Decimal] = None):
         self.id, self.agent_id, self.policy = wallet_id, agent_id, policy
         self.purchases: list = []
         self.closed = self.stopped = False
-        self.mandate_id = ""        # the owner's vaulted PayPal (payment token), once approved
+        # Money loaded and not yet withdrawn. None: pre-loaded with the whole budget (demo money).
+        self.funded = policy.budget if funded is None else Decimal(funded).quantize(CENT)
+        self.top_ups: list = []     # {"id", "amount", "order_id", "capture_id", "returned"}
+        self.withdrawn = Decimal("0")
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
+
+    # ---------------------------------------------------------------- loading and returning money
+
+    def balance(self) -> Decimal:
+        """Loaded money not yet paid out (some may be reserved)."""
+        return self.funded - self.spent()
+
+    def top_up(self, amount: Decimal, order_id: str = "", capture_id: str = "") -> dict:
+        with self._lock:
+            amount = Decimal(amount).quantize(CENT)
+            if self.closed or self.stopped:
+                raise WalletError("this wallet is closed")
+            if amount <= 0:
+                raise WalletError("a top-up must be more than 0")
+            if self.balance() + amount > self.policy.budget:
+                raise WalletError(f"the wallet can hold at most {self.policy.budget:.2f}; "
+                                  f"you can add up to {self.policy.budget - self.balance():.2f}")
+            entry = {"id": f"{self.id}-t{len(self.top_ups) + 1}", "amount": amount, "order_id": order_id,
+                     "capture_id": capture_id, "returned": Decimal("0")}
+            self.top_ups.append(entry)
+            self.funded += amount
+            return entry
+
+    def returnable(self) -> Decimal:
+        """What can go back to the owner now: loaded, not spent, not reserved."""
+        return max(self.remaining(), Decimal("0"))
+
+    def record_withdraw(self, amount: Decimal) -> None:
+        with self._lock:
+            amount = Decimal(amount).quantize(CENT)
+            if amount <= 0 or amount > self.returnable():
+                raise WalletError("nothing to return")
+            self.funded -= amount
+            self.withdrawn += amount
 
     # ---------------------------------------------------------------- money totals
 
@@ -154,8 +196,8 @@ class Wallet:
         return self._sum(OPEN, category)
 
     def remaining(self, category: Optional[str] = None) -> Decimal:
-        """Left in the whole budget, or in one envelope (never more than the budget has left)."""
-        left = self.policy.budget - self.spent() - self.reserved()
+        """Left to spend: loaded money not spent or reserved, or that within one envelope."""
+        left = self.funded - self.spent() - self.reserved()
         if category is None:
             return left
         env = self.policy.envelopes[category]
@@ -163,7 +205,9 @@ class Wallet:
 
     def totals(self) -> dict:
         with self._lock:
-            return {"budget": f"{self.policy.budget:.2f}", "spent": f"{self.spent():.2f}",
+            return {"budget": f"{self.policy.budget:.2f}", "funded": f"{self.funded:.2f}",
+                    "balance": f"{self.balance():.2f}", "withdrawn": f"{self.withdrawn:.2f}",
+                    "spent": f"{self.spent():.2f}",
                     "reserved": f"{self.reserved():.2f}", "remaining": f"{self.remaining():.2f}",
                     "envelopes": [{"name": name, "limit": f"{env.limit:.2f}", "spent": f"{self.spent(name):.2f}",
                                    "reserved": f"{self.reserved(name):.2f}", "remaining": f"{self.remaining(name):.2f}",
@@ -187,7 +231,8 @@ class Wallet:
             reasons.append(f"there is no {category[:24]!r} envelope in this wallet")
             category = category[:24]
             if price > self.remaining():
-                reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
+                reasons.append(f"{price} is over the money left in the wallet ({self.remaining():.2f})"
+                               + ("; top it up first" if self.funded <= 0 else ""))
             return reasons, approve_above, category
         approve_above = min(approve_above, env.approve_above)
         if price > self.policy.max_per_purchase:
@@ -195,7 +240,8 @@ class Wallet:
         elif price > env.max_per_purchase:
             reasons.append(f"{price} is over the {env.max_per_purchase} limit per {category} purchase")
         if price > self.remaining():
-            reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
+            reasons.append(f"{price} is over the money left in the wallet ({self.remaining():.2f})"
+                               + ("; top it up first" if self.funded <= 0 else ""))
         elif price > self.remaining(category):
             reasons.append(f"{price} is over the {category} envelope left ({self.remaining(category):.2f})")
         return reasons, approve_above, category

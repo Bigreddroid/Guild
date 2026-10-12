@@ -1,136 +1,146 @@
-// Turns a Guild Pay wallet's event stream into what the owner's page shows: the rules,
-// the money, every purchase the agent asked for with the wallet's decision, and what
-// the agent said along the way. Pure functions only.
+// Turns a Guild Pay wallet's event stream into what the owner's page shows: the money,
+// the rules, one activity feed (money in, money out, what was blocked) and what the
+// agent said. Pure functions only.
 
 export type WalletEvent = { type: string; [key: string]: any };
 
+export interface Proof { url: string; valid: boolean; reasons: string[]; checks: Record<string, boolean> }
 export interface Purchase {
   id: string; url: string; item: string; price: number; status: string; reasons: string[];
   checks: Record<string, boolean>; seller: string; order_id: string; at: number; shop: string; page_price: number | null;
-  category: string;
+  category: string; kind: 'buy' | 'promotion'; creator: string; channel: string; proofs: Proof[]; bookedBy: string;
 }
 export interface Envelope { name: string; limit: number; spent: number; reserved: number; remaining: number }
-export interface Totals { budget: number; spent: number; reserved: number; remaining: number; envelopes: Envelope[] }
-export interface Line { text: string; tone: '' | 'good' | 'bad' | 'wait' | 'agent' }
+export interface Totals {
+  budget: number; funded: number; balance: number; withdrawn: number; spent: number; reserved: number; remaining: number;
+  envelopes: Envelope[];
+}
+export type Tone = 'in' | 'out' | 'blocked' | 'waiting' | 'held' | 'info';
+export interface Activity {
+  key: string; tone: Tone; title: string; detail: string; amount: number | null; status: string; purchase?: Purchase;
+}
 export interface WalletView {
   id: string; agent: string; mode: string; want: string; mustHave: string[]; mustNot: string[];
   maxPerPurchase: number; approveAbove: number; totals: Totals; purchases: Purchase[];
-  story: Line[]; closed: boolean; mandate: boolean; checkoutUrl: string; refundedAmount: number;
+  activity: Activity[]; notes: string[]; agentMode: string; closed: boolean; stopped: boolean; error: string;
 }
 
-const money = (n: number) => `$${n.toFixed(2)}`;
+export const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const num = (v: any) => Number(v ?? 0);
 
 export function shopOf(url: string): string {
   try {
     const u = new URL(url);
-    return u.hostname === 'demo-shops.guild.example' ? `${u.pathname.split('/')[1]} (demo)` : u.hostname.replace(/^www\./, '');
+    if (u.hostname === 'demo-shops.guild.example') {
+      const [first, second] = u.pathname.split('/').filter(Boolean);
+      return first === 'creators' ? `${second} (demo)` : `${first} (demo)`;
+    }
+    return u.hostname.replace(/^www\./, '');
   } catch {
     return url.slice(0, 40);
   }
 }
 
+export const agentName = (id: string) => (id === 'shopperbot' ? 'ShopperBot' : id);
+
 export function emptyWallet(): WalletView {
   return { id: '', agent: '', mode: '', want: '', mustHave: [], mustNot: [], maxPerPurchase: 0, approveAbove: 0,
-           totals: { budget: 0, spent: 0, reserved: 0, remaining: 0, envelopes: [] }, purchases: [], story: [], closed: false,
-           mandate: false, checkoutUrl: '', refundedAmount: 0 };
+           totals: { budget: 0, funded: 0, balance: 0, withdrawn: 0, spent: 0, reserved: 0, remaining: 0, envelopes: [] },
+           purchases: [], activity: [], notes: [], agentMode: '', closed: false, stopped: false, error: '' };
 }
 
 export const CHECK_NAMES: Record<string, string> = {
-  seller: 'seller listed', name: 'right item', currency: 'currency', max_price: 'under max', claimed_price: 'price matches',
-  sanity: 'plausible price', stock: 'in stock', shipping: 'ships to you',
+  seller: 'Real seller', name: 'Right item', currency: 'Currency', max_price: 'Under your max',
+  claimed_price: 'Price matches page', sanity: 'Plausible price', stock: 'In stock', shipping: 'Ships to you',
+  live: 'Post is live', channel: "Creator's own channel", link: 'Links to you', disclosure: 'Says it is an ad',
+  mentions: 'Mentions you',
 };
+
+const TONE: Record<string, Tone> = { paid: 'out', approved: 'out', blocked: 'blocked', pending: 'waiting', held: 'held',
+                                     rejected: 'info', failed: 'blocked', voided: 'info', refunded: 'info' };
+
+const isMoneyIn = (e: WalletEvent) => e.type === 'topped_up' || (e.type === 'wallet' && e.mode === 'preview' && num(e.funded) > 0);
+const isMoneyOut = (e: WalletEvent) => e.type === 'withdrawn' && num(e.amount) > 0;
 
 export function reduceWallet(events: WalletEvent[]): WalletView {
   const v = emptyWallet();
   const byId = new Map<string, Purchase>();
-  const say = (text: string, tone: Line['tone'] = '') => v.story.push({ text, tone });
+  const feed: (Activity | string)[] = [];   // money lines, or purchase ids (resolved at the end)
+
   const totals = (e: WalletEvent) => {
     if (e.budget === undefined) return;
-    const envelopes = (e.envelopes ?? []).map((x: any) => ({ name: String(x.name), limit: num(x.limit), spent: num(x.spent),
-                                                             reserved: num(x.reserved), remaining: num(x.remaining) }));
-    v.totals = { budget: num(e.budget), spent: num(e.spent), reserved: num(e.reserved), remaining: num(e.remaining), envelopes };
+    v.totals = {
+      budget: num(e.budget), funded: num(e.funded ?? e.budget), balance: num(e.balance ?? e.remaining),
+      withdrawn: num(e.withdrawn), spent: num(e.spent), reserved: num(e.reserved), remaining: num(e.remaining),
+      envelopes: (e.envelopes ?? []).map((x: any) => ({ name: String(x.name), limit: num(x.limit), spent: num(x.spent),
+                                                        reserved: num(x.reserved), remaining: num(x.remaining) })),
+    };
   };
   const upsert = (p: any, extra: Partial<Purchase> = {}): Purchase => {
     const old = byId.get(p.id);
     const row: Purchase = {
       id: p.id, url: p.url, item: p.item, price: num(p.price), status: p.status, reasons: p.reasons ?? [],
       checks: p.checks ?? {}, seller: p.seller ?? '', order_id: p.order_id ?? '', shop: shopOf(p.url),
-      category: p.category ?? 'shopping', at: old?.at ?? 0, page_price: old?.page_price ?? null, ...extra,
+      category: p.category ?? 'shopping', kind: p.kind === 'promotion' ? 'promotion' : 'buy',
+      creator: p.creator ?? '', channel: p.channel ?? '', proofs: p.proofs ?? old?.proofs ?? [], bookedBy: p.booked_by ?? '',
+      at: old?.at ?? 0, page_price: old?.page_price ?? null, ...extra,
     };
-    if (!old) v.purchases.push(row);
+    if (!old) { v.purchases.push(row); feed.push(row.id); }
     else Object.assign(old, row);
     byId.set(p.id, old ?? row);
     return old ?? row;
   };
 
-  for (const e of events) {
+  events.forEach((e, i) => {
     totals(e);
+    if (isMoneyIn(e)) {
+      const demo = e.mode === 'preview';
+      feed.push({ key: `in${i}`, tone: 'in', status: 'added', amount: num(e.type === 'wallet' ? e.funded : e.amount),
+                  title: demo ? 'Demo money added' : 'Added with PayPal',
+                  detail: demo ? 'No PayPal keys on this server, so nothing real moved' : `PayPal order ${e.order_id ?? ''}` });
+    }
+    if (isMoneyOut(e)) {
+      feed.push({ key: `out${i}`, tone: 'out', status: 'returned', amount: num(e.amount), title: 'Returned to you',
+                  detail: e.mode === 'preview' ? 'Demo money' : 'Refunded to your PayPal' });
+    }
     switch (e.type) {
       case 'wallet':
         Object.assign(v, { id: e.wallet_id, agent: e.agent, mode: e.mode, want: e.want, mustHave: e.must_have ?? [],
                            mustNot: e.must_not ?? [], maxPerPurchase: num(e.max_per_purchase), approveAbove: num(e.approve_above) });
-        say(`Wallet opened: ${money(v.totals.budget)} for ${e.agent === 'shopperbot' ? 'ShopperBot' : e.agent}. `
-            + `Up to ${money(v.maxPerPurchase)} per purchase; you approve anything over ${money(v.approveAbove)}.`);
         break;
       case 'agent':
-        say(`${e.agent}${e.mode === 'scripted' ? ' (scripted)' : ''}: ${e.say}`, 'agent');
+        v.notes.push(String(e.say));
+        v.agentMode = e.mode ?? '';
         break;
-      case 'purchase': {
-        const p = upsert(e.purchase, { at: num(e.at), page_price: e.page_price == null ? null : num(e.page_price) });
-        const head = `${money(p.price)} · ${p.item} at ${p.shop}${p.category !== 'shopping' ? ` (${p.category})` : ''}`;
-        if (p.status === 'blocked') say(`✗ Blocked ${head}: ${p.reasons.join('; ')}`, 'bad');
-        else if (p.status === 'pending') say(`‖ Waiting for you: ${head}. Every check passed.`, 'wait');
-        else say(`✓ Approved ${head}: every check passed and it's within your rules.`, 'good');
+      case 'purchase': case 'promotion':
+        upsert(e.purchase, { at: num(e.at), page_price: e.page_price == null ? null : num(e.page_price) });
         break;
-      }
-      case 'approved':
-        upsert(e.purchase);
-        say(`You approved ${money(num(e.purchase.price))} for ${e.purchase.item}.`, 'good');
+      case 'approved': case 'rejected': case 'paid': case 'held': case 'voided': case 'failed': case 'refunded':
+      case 'proof':
+        if (e.purchase) upsert(e.purchase);
         break;
-      case 'rejected':
-        upsert(e.purchase);
-        say(`You rejected ${e.purchase.item}. Its ${money(num(e.purchase.price))} is free again.`);
+      case 'capture_failed':
+        if (e.purchase) upsert(e.purchase);
+        v.error = `Paying the creator failed (${e.error}). The money is still held.`;
         break;
-      case 'paid': {
-        const p = upsert(e.purchase);
-        v.checkoutUrl = '';
-        say(e.mode === 'preview'
-          ? `PayPal preview (no keys): would pay ${money(p.price)} to ${p.seller || p.shop}.`
-          : `PayPal sandbox: paid ${money(p.price)} to ${p.seller || p.shop}${e.via === 'mandate' ? ' from your saved PayPal' : ''} · order ${p.order_id}.`, 'good');
-        break;
-      }
-      case 'checkout':
-        upsert(e.purchase);
-        v.checkoutUrl = e.approve_url ?? '';
-        say('Approve this payment in PayPal to send it straight to the seller.', 'wait');
-        break;
-      case 'failed': {
-        const p = upsert(e.purchase);
-        say(`Payment failed for ${p.item}: ${p.reasons[0] ?? e.error ?? 'unknown error'}. Nothing was charged.`, 'bad');
-        break;
-      }
-      case 'refunded': {
-        const p = upsert(e.purchase);
-        v.refundedAmount += p.price;
-        say(`Refunded ${money(p.price)} to you.`, 'good');
-        break;
-      }
-      case 'refund_failed':
-        say(`Refund failed: ${e.error}.`, 'bad');
-        break;
-      case 'mandate':
-        if (e.approved) { v.mandate = true; say('Your PayPal is connected: approved purchases pay without another login.', 'good'); }
-        else if (e.revoked) { v.mandate = false; say('Your PayPal permission was revoked.'); }
+      case 'withdraw_failed':
+        v.error = `Returning your money failed (${e.error}).`;
         break;
       case 'stopped':
-        say(`You pressed stop. ${e.dropped?.length ? `${e.dropped.length} waiting purchase(s) cancelled. ` : ''}No new purchases.`, 'bad');
+        v.stopped = true;
         break;
       case 'closed':
         v.closed = true;
-        say(`Wallet closed (${e.reason}). Spent ${money(v.totals.spent)} of ${money(v.totals.budget)}.`);
         break;
     }
-  }
+  });
+
+  v.activity = feed.map(f => {
+    if (typeof f !== 'string') return f;
+    const p = byId.get(f)!;
+    return { key: p.id, tone: TONE[p.status] ?? 'info', status: p.status, amount: p.price, purchase: p,
+             title: p.kind === 'promotion' ? `Promotion by ${p.creator}` : p.item,
+             detail: p.kind === 'promotion' ? `${p.shop} · pays on proof` : p.shop };
+  }).reverse();
   return v;
 }

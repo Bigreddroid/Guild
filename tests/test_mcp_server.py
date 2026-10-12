@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples", "mc
 
 from guild import shops
 from guild_pay_mcp import Server
-from tests.test_wallet_api import app
+from tests.test_wallet_api import open_wallet, app
 
 
 def through(client, token):
@@ -23,7 +23,7 @@ class McpServerTests(unittest.TestCase):
     def setUp(self):
         self.c = app(shopper=None)
         agent = self.c.post("/api/agents", json={"name": "Desk Agent", "payout_email": "d@example.com"}).json()
-        self.wid = self.c.post("/api/wallets", json={"agent": agent["agent_id"]}).json()["wallet_id"]
+        self.wid = open_wallet(self.c, {"agent": agent["agent_id"]})["wallet_id"]
         self.server = Server(through(self.c, agent["token"]), self.wid)
 
     def rpc(self, *messages):

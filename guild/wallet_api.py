@@ -1,21 +1,20 @@
-"""Guild Pay over HTTP: wallets that owners fund and agents spend, within rules.
+"""Guild Pay over HTTP: prepaid wallets that owners top up with PayPal and agents spend, within rules.
 
     POST /api/wallets                               owner creates a wallet (returns an owner key once);
                                                     optional envelopes {name: {limit, max_per_purchase, approve_above}}
     GET  /api/wallets/{id}                          policy, totals, purchases
-    POST /api/wallets/{id}/mandate                  owner: PayPal page to approve the mandate (Vault)
-    DELETE /api/wallets/{id}/mandate                owner: revoke it
+    POST /api/wallets/{id}/top-up                   owner: {amount}; PayPal checkout (credited at once in preview)
+    POST /api/wallets/{id}/withdraw                 owner: every unspent, unreserved dollar back to PayPal
     POST /api/wallets/{id}/purchases                agent (Bearer token): ask to buy {url, item, price, category?}
     POST /api/wallets/{id}/purchases/{pid}/approve  owner: approve one waiting purchase
     POST /api/wallets/{id}/purchases/{pid}/reject   owner
-    POST /api/wallets/{id}/purchases/{pid}/refund   owner
-    POST /api/wallets/{id}/stop                     owner: stop switch
+    POST /api/wallets/{id}/stop                     owner: freeze; waiting purchases dropped, unspent money returned
     POST /api/wallets/{id}/promotions               owner (X-Owner-Key) or the wallet's agent (Bearer): book a
                                                     creator, paid on proof {creator, channel, paypal_email, amount,
                                                     link, words?, deadline_minutes?, category?}
     POST /api/wallets/{id}/promotions/{pid}/proof   anyone: {url} of the live post; paid only if it checks out
     POST /api/wallets/{id}/purchases/{pid}/cancel   owner: release a held promotion
-    GET  /api/wallets/paypal/{mandate,checkout,hold,cancel}  PayPal sends the owner back here
+    GET  /api/wallets/paypal/{topup,cancel}         PayPal sends the owner back here
 
 Every step is an event on /api/runs/{wallet_id}/events, so the page can follow along.
 The owner key is shown once and only its hash is kept; it travels in the
@@ -87,7 +86,8 @@ class WalletService:
         self.fetch, self.trust_for, self.pay, self.new_run, self.clock = fetch, trust_for, pay, new_run, clock
         self.entries: dict = {}     # wallet id -> {"wallet", "run", "key", "created"}
         self._lock = threading.Lock()
-        self._money_lock = threading.RLock()   # one capture or void at a time
+        self._money_lock = threading.RLock()   # one capture, void or withdrawal at a time
+        self.house_agent: Optional[Callable] = None   # starts ShopperBot once the wallet has money
 
     # ------------------------------------------------------------- lifecycle
 
@@ -108,9 +108,11 @@ class WalletService:
             if sum(not e["wallet"].closed for e in self.entries.values()) >= MAX_WALLETS:
                 raise HTTPException(429, "too many open wallets; try again soon")
             run_id, run = self.new_run()
-            wallet = Wallet(run_id, agent_id, policy)
+            # Every wallet starts empty: the owner loads it (demo money in preview, PayPal in sandbox).
+            wallet = Wallet(run_id, agent_id, policy, Decimal("0"))
             key = "ok_" + secrets.token_urlsafe(24)
-            self.entries[run_id] = {"wallet": wallet, "run": run, "key": _hash(key), "created": self.clock()}
+            self.entries[run_id] = {"wallet": wallet, "run": run, "key": _hash(key), "created": self.clock(),
+                                    "agent_started": False}
         run.emit({"type": "wallet", "wallet_id": wallet.id, "agent": agent_id, "mode": self.pay.mode,
                   "want": want.title, "must_have": list(want.must_have), "must_not": list(want.must_not),
                   "max_price": str(want.max_price), "ship_to": want.ship_to, **wallet.totals(),
@@ -160,14 +162,16 @@ class WalletService:
             return
         for p in wallet.held():
             self._void(entry, p, f"the hold was released: {why}")
-        totals = wallet.close()
-        run.emit({"type": "closed", "reason": why, **totals})
+        wallet.close()
+        if wallet.returnable() > 0:     # unspent money always goes back to the owner
+            self._withdraw(entry)
+        run.emit({"type": "closed", "reason": why, **wallet.totals()})
         run.done = True
 
     def view(self, entry: dict) -> dict:
         w = entry["wallet"]
         return {"wallet_id": w.id, "agent": w.agent_id, "closed": w.closed, "stopped": w.stopped,
-                "mandate": bool(w.mandate_id), "mode": self.pay.mode, "want": w.policy.want.title,
+                "mode": self.pay.mode, "want": w.policy.want.title,
                 "max_per_purchase": f"{w.policy.max_per_purchase:.2f}", "approve_above": f"{w.policy.approve_above:.2f}",
                 **w.totals(), "purchases": [p.public() for p in w.purchases]}
 
@@ -284,7 +288,7 @@ class WalletService:
             if not verdict.valid:
                 return {"type": "proof", "valid": False, "reasons": verdict.reasons, "checks": verdict.checks,
                         "purchase": p.public()}
-            event = {**self.pay.capture(wallet, p, f"proof checked: {verdict.url}"), **wallet.totals()}
+            event = {**self.pay.capture(wallet, p, "the post checked out: paid to the creator"), **wallet.totals()}
             run.emit(event)
             return event
 
@@ -314,20 +318,48 @@ class WalletService:
         entry["run"].emit(event)
         return event
 
-    def refund(self, entry: dict, purchase_id: str) -> dict:
+    # ------------------------------------------------------------- loading and returning money
+
+    def top_up(self, entry: dict, amount) -> dict:
+        amount = _money(amount, "amount")
+        if entry["wallet"].closed:
+            raise HTTPException(409, "this wallet is closed")
         try:
-            event = self.pay.refund(entry["wallet"], entry["wallet"]._get(purchase_id))
+            event = self.pay.start_top_up(entry["wallet"], amount)
         except WalletError as exc:
             raise HTTPException(409, str(exc))
-        event = {**event, **entry["wallet"].totals()}
+        except Exception as exc:  # noqa: BLE001 - PayPal down or refused
+            raise HTTPException(502, f"PayPal: {type(exc).__name__}")
+        if event["type"] == "topped_up":
+            self.credited(entry, event)
+        return event
+
+    def credited(self, entry: dict, event: dict) -> None:
+        """Money arrived: tell the page, and let the house agent start shopping."""
+        entry["run"].emit({**event, **entry["wallet"].totals()})
+        self.start_agent(entry)
+
+    def start_agent(self, entry: dict) -> None:
+        wallet = entry["wallet"]
+        if (self.house_agent and wallet.agent_id == HOUSE_AGENT and not entry["agent_started"]
+                and wallet.remaining() > 0 and not wallet.closed):
+            entry["agent_started"] = True
+            self.house_agent(self, wallet.id)
+
+    def _withdraw(self, entry: dict) -> dict:
+        with self._money_lock:
+            event = {**self.pay.withdraw(entry["wallet"]), **entry["wallet"].totals()}
         entry["run"].emit(event)
         return event
 
+    def withdraw(self, entry: dict) -> dict:
+        if entry["wallet"].returnable() <= 0:
+            raise HTTPException(409, "nothing to return: the rest is spent or waiting")
+        return self._withdraw(entry)
+
     def stop(self, entry: dict) -> dict:
         dropped = entry["wallet"].stop()
-        revoke = self.pay.revoke(entry["wallet"])
-        event = {"type": "stopped", "dropped": [p.id for p in dropped], "mandate_revoked": revoke.get("revoked"),
-                 **entry["wallet"].totals()}
+        event = {"type": "stopped", "dropped": [p.id for p in dropped], **entry["wallet"].totals()}
         entry["run"].emit(event)
         self.close(entry, "the owner stopped this wallet")
         return event
@@ -336,6 +368,7 @@ class WalletService:
 def mount(app, service: WalletService, read_json: Callable, client_key: Callable, bearer: Callable,
           limiter, start_house_agent: Optional[Callable] = None) -> None:
     """Add the wallet routes to the FastAPI app."""
+    service.house_agent = start_house_agent
 
     def owner(wallet_id: str, request: Request) -> dict:
         return service.owner(wallet_id, request.headers.get("x-owner-key", ""))
@@ -347,24 +380,18 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
         body = await read_json(request)
         agent = str(body.get("agent") or HOUSE_AGENT)
         wallet, key, run = service.create(body, agent)
-        if agent == HOUSE_AGENT and start_house_agent:
-            start_house_agent(service, wallet.id)
+        service.start_agent(service.get(wallet.id))   # at once if it has money; otherwise after the first top-up
         return {"wallet_id": wallet.id, "owner_key": key, "agent": agent, "mode": service.pay.mode,
-                "note": "Keep the owner key; Guild stores only its hash. Send it as X-Owner-Key to approve or stop."}
+                "note": "Keep the owner key; Guild stores only its hash. Send it as X-Owner-Key to top up, "
+                        "approve or stop."}
 
     @app.get("/api/wallets/paypal/{what}", include_in_schema=False)
     def paypal_return(what: str, link: str = "", token: str = ""):
         wallets = service.wallets()
         try:
-            if what == "mandate":
-                wallet = service.pay.finish_mandate(link, wallets)
-                service.get(wallet.id)["run"].emit({"type": "mandate", "approved": True})
-            elif what == "checkout":
-                wallet, event = service.pay.finish_checkout(link, token, wallets)
-                service.get(wallet.id)["run"].emit({**event, **wallet.totals()})
-            elif what == "hold":
-                wallet, event = service.pay.finish_hold(link, token, wallets)
-                service.get(wallet.id)["run"].emit({**event, **wallet.totals()})
+            if what == "topup":
+                wallet, event = service.pay.finish_top_up(link, token, wallets)
+                service.credited(service.get(wallet.id), event)
             else:
                 service.pay.cancel_link(link)
                 return RedirectResponse("/?wallet_error=cancelled", status_code=303)
@@ -378,23 +405,16 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
         service.expire()
         return service.view(service.get(wallet_id))
 
-    @app.post("/api/wallets/{wallet_id}/mandate")
-    def start_mandate(wallet_id: str, request: Request):
+    @app.post("/api/wallets/{wallet_id}/top-up")
+    async def top_up(wallet_id: str, request: Request):
         entry = owner(wallet_id, request)
-        if entry["wallet"].closed:
-            raise HTTPException(409, "this wallet is closed")
-        try:
-            url = service.pay.start_mandate(entry["wallet"])
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(502, f"PayPal: {exc}")
-        return {"approve_url": url, "mode": service.pay.mode}
+        if not limiter.allow(f"topup:{wallet_id}"):
+            raise HTTPException(429, "too many top-ups; wait a minute")
+        return service.top_up(entry, (await read_json(request)).get("amount"))
 
-    @app.delete("/api/wallets/{wallet_id}/mandate")
-    def revoke_mandate(wallet_id: str, request: Request):
-        entry = owner(wallet_id, request)
-        event = service.pay.revoke(entry["wallet"])
-        entry["run"].emit(event)
-        return event
+    @app.post("/api/wallets/{wallet_id}/withdraw")
+    def withdraw(wallet_id: str, request: Request):
+        return service.withdraw(owner(wallet_id, request))
 
     @app.post("/api/wallets/{wallet_id}/purchases")
     async def buy(wallet_id: str, request: Request):
@@ -412,8 +432,6 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
             return service.approve(entry, purchase_id)
         if action == "reject":
             return service.reject(entry, purchase_id)
-        if action == "refund":
-            return service.refund(entry, purchase_id)
         if action == "cancel":
             return service.cancel(entry, purchase_id)
         raise HTTPException(404, "unknown action")

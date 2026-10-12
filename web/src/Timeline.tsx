@@ -8,7 +8,6 @@ import '@bryntum/gantt/gantt.css';
 import '@bryntum/gantt/svalbard-light.css';
 import { StringHelper } from '@bryntum/gantt';
 import type { HuntView } from './hunt';
-import type { WalletView } from './wallet';
 
 // Seconds since the bounty opened, drawn from a fixed start so identical bounties
 // give identical charts.
@@ -52,30 +51,11 @@ export function toProject(v: HuntView) {
   return { tasks, end: Math.max(10, Math.ceil(last) + 2) };
 }
 
-const STATUS_COLOR: Record<string, string> = { paid: 'green', approved: 'green', pending: 'orange', blocked: 'red',
-                                               rejected: 'gray', refunded: 'gray', failed: 'red' };
-
-// Wallet: one row for the agent, a marker per purchase request at the second it arrived.
-export function walletProject(v: WalletView) {
-  const last = Math.max(0, ...v.purchases.map(p => p.at));
-  const children = v.purchases.map((p, i) => ({
-    id: `p${i + 1}`, name: `${p.status === 'blocked' ? '✗' : p.status === 'pending' ? '‖' : '✓'} $${p.price.toFixed(2)} · ${p.shop}`,
-    startDate: at(p.at), duration: 0, manuallyScheduled: true, eventColor: STATUS_COLOR[p.status] ?? 'gray',
-    note: `${p.status}: ${p.reasons.join('; ')}`,
-  }));
-  const tasks = v.purchases.length ? [{
-    id: 'agent', name: `${v.agent === 'shopperbot' ? 'ShopperBot' : v.agent} · ${v.purchases.length} requests`,
-    expanded: true, manuallyScheduled: true, children, startDate: at(0), endDate: at(Math.max(last, 0.2)),
-  }] : [];
-  return { tasks, end: Math.max(10, Math.ceil(last) + 2) };
-}
-
-type TimelineProps = { kind: 'hunt'; view: HuntView } | { kind: 'wallet'; view: WalletView };
+type TimelineProps = { kind: 'hunt'; view: HuntView };
 
 export default function Timeline(props: TimelineProps) {
   const ref = useRef<BryntumGantt>(null);
-  const data = useMemo(() => (props.kind === 'wallet' ? walletProject(props.view) : toProject(props.view)),
-    [props.kind, props.view]);
+  const data = useMemo(() => toProject(props.view), [props.view]);
 
   // Bryntum loads are async; overlapping loads can leave the store empty. Load one
   // at a time and always finish on the newest data.

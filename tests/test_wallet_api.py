@@ -33,6 +33,17 @@ def app(paypal=None, shopper=scripted_now, registry=None):
                                  shopper=shopper), follow_redirects=False)
 
 
+def open_wallet(c, body=None, amount="400"):
+    """Create a wallet and load it with (preview) money, as the owner would."""
+    r = c.post("/api/wallets", json=body or {})
+    assert r.status_code == 201, r.text
+    out = r.json()
+    top = c.post(f"/api/wallets/{out['wallet_id']}/top-up", json={"amount": amount},
+                 headers={"X-Owner-Key": out["owner_key"]})
+    assert top.status_code == 200, top.text
+    return out
+
+
 def statuses(c, wid):
     return [p["status"] for p in c.get(f"/api/wallets/{wid}").json()["purchases"]]
 
@@ -43,6 +54,9 @@ class ScriptedStoryTests(unittest.TestCase):
         r = c.post("/api/wallets", json={"budget": "400", "max_per_purchase": "350", "approve_above": "250"})
         self.assertEqual(r.status_code, 201, r.text)
         wid, key = r.json()["wallet_id"], r.json()["owner_key"]
+        self.assertEqual(c.get(f"/api/wallets/{wid}").json()["purchases"], [])   # empty wallet: ShopperBot waits
+        topped = c.post(f"/api/wallets/{wid}/top-up", json={"amount": "400"}, headers={"X-Owner-Key": key}).json()
+        self.assertEqual((topped["type"], topped["mode"]), ("topped_up", "preview"))
         view = c.get(f"/api/wallets/{wid}").json()
         self.assertEqual(statuses(c, wid), ["blocked", "blocked", "blocked", "pending", "blocked"])
         reasons = [p["reasons"][0] for p in view["purchases"]]
@@ -61,8 +75,11 @@ class ScriptedStoryTests(unittest.TestCase):
         self.assertEqual((paid["type"], paid["mode"], paid["spent"]), ("paid", "preview", "299.00"))
         self.assertEqual(c.post(f"/api/wallets/{wid}/purchases/{pid}/approve",
                                 headers={"X-Owner-Key": key}).status_code, 409)
-        refund = c.post(f"/api/wallets/{wid}/purchases/{pid}/refund", headers={"X-Owner-Key": key}).json()
-        self.assertEqual((refund["type"], refund["spent"]), ("refunded", "0.00"))
+        back = c.post(f"/api/wallets/{wid}/withdraw", headers={"X-Owner-Key": key}).json()
+        self.assertEqual((back["type"], back["amount"], back["balance"]), ("withdrawn", "101.00", "0.00"))
+        self.assertEqual(c.post(f"/api/wallets/{wid}/withdraw", headers={"X-Owner-Key": key}).status_code, 409)
+        self.assertEqual(c.post(f"/api/wallets/{wid}/top-up", json={"amount": "50"},
+                                headers={"X-Owner-Key": key}).json()["type"], "topped_up")
 
         events = c.get(f"/api/runs/{wid}").json()["events"]
         types = [e["type"] for e in events]
@@ -88,12 +105,10 @@ class ScriptedStoryTests(unittest.TestCase):
         reg = Registry()
         c = app(shopper=None, registry=reg)
         bot = c.post("/api/agents", json={"name": "Spender", "payout_email": "dev@example.com"}).json()
-        r = c.post("/api/wallets", json={"agent": bot["agent_id"], "budget": "400", "approve_above": "350",
-                                         "envelopes": {"shopping": {"limit": "320"},
-                                                       "marketing": {"limit": "80", "max_per_purchase": "50",
-                                                                     "approve_above": "20"}}})
-        self.assertEqual(r.status_code, 201, r.text)
-        wid, auth = r.json()["wallet_id"], {"Authorization": f"Bearer {bot['token']}"}
+        r = open_wallet(c, {"agent": bot["agent_id"], "budget": "400", "approve_above": "350",
+                            "envelopes": {"shopping": {"limit": "320"},
+                                          "marketing": {"limit": "80", "max_per_purchase": "50", "approve_above": "20"}}})
+        wid, auth = r["wallet_id"], {"Authorization": f"Bearer {bot['token']}"}
         view = c.get(f"/api/wallets/{wid}").json()
         self.assertEqual([(e["name"], e["limit"], e["approve_above"]) for e in view["envelopes"]],
                          [("shopping", "320.00", "320.00"), ("marketing", "80.00", "20.00")])
@@ -125,7 +140,7 @@ class OutsideAgentTests(unittest.TestCase):
         c = app(shopper=None, registry=reg)
         sleuth = c.post("/api/agents", json={"name": "Sleuth", "payout_email": "dev@example.com"}).json()
         other = c.post("/api/agents", json={"name": "Other Bot", "payout_email": "o@example.com"}).json()
-        r = c.post("/api/wallets", json={"agent": sleuth["agent_id"], "approve_above": "350"}).json()
+        r = open_wallet(c, {"agent": sleuth["agent_id"], "approve_above": "350"})
         wid = r["wallet_id"]
         buy = {"url": HARBOR, "item": "headphones", "price": "299.00"}
         self.assertEqual(c.post(f"/api/wallets/{wid}/purchases", json=buy).status_code, 401)
@@ -140,30 +155,38 @@ class OutsideAgentTests(unittest.TestCase):
 
 
 class SandboxTests(unittest.TestCase):
-    def test_mandate_then_purchases_pay_the_seller_directly(self):
+    def test_top_up_then_the_agent_shops_and_the_seller_is_paid_from_the_wallet(self):
         fake = FakeSandbox()
         paypal = PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake)
         os.environ["GUILD_SELLER_ACCOUNTS"] = "harbor-audio=sb-harbor@business.example.com"
         try:
-            c = app(paypal=paypal, shopper=None)
+            c = app(paypal=paypal)
             r = c.post("/api/wallets", json={"approve_above": "250"}).json()
-            wid, key = r["wallet_id"], r["owner_key"]
-            mandate = c.post(f"/api/wallets/{wid}/mandate", headers={"X-Owner-Key": key}).json()
-            self.assertIn("sandbox.paypal.com", mandate["approve_url"])
+            wid, owner = r["wallet_id"], {"X-Owner-Key": r["owner_key"]}
+            view = c.get(f"/api/wallets/{wid}").json()
+            self.assertEqual((view["funded"], view["purchases"]), ("0.00", []))   # empty: ShopperBot waits
+            self.assertEqual(c.post(f"/api/wallets/{wid}/top-up", json={"amount": "401"}, headers=owner).status_code, 409)
+            started = c.post(f"/api/wallets/{wid}/top-up", json={"amount": "400"}, headers=owner).json()
+            self.assertIn("sandbox.paypal.com", started["approve_url"])
             ret = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]["return_url"]
-            back = c.get(urllib.parse.urlsplit(ret).path + "?" + urllib.parse.urlsplit(ret).query)
+            back = c.get(urllib.parse.urlsplit(ret).path + "?" + urllib.parse.urlsplit(ret).query + "&token=ORDER1")
             self.assertEqual((back.status_code, back.headers["location"]), (303, f"/?wallet={wid}"))
-            self.assertTrue(c.get(f"/api/wallets/{wid}").json()["mandate"])
-            scripted_now(c.app.state.wallets, wid)
-            pid = c.get(f"/api/wallets/{wid}").json()["purchases"][3]["id"]
-            paid = c.post(f"/api/wallets/{wid}/purchases/{pid}/approve", headers={"X-Owner-Key": key}).json()
+            view = c.get(f"/api/wallets/{wid}").json()
+            self.assertEqual(view["funded"], "400.00")
+            self.assertEqual([p["status"] for p in view["purchases"]], ["blocked", "blocked", "blocked", "pending", "blocked"])
+            pid = view["purchases"][3]["id"]
+            paid = c.post(f"/api/wallets/{wid}/purchases/{pid}/approve", headers=owner).json()
+            stop = c.post(f"/api/wallets/{wid}/stop", headers=owner).json()
         finally:
             del os.environ["GUILD_SELLER_ACCOUNTS"]
-        self.assertEqual((paid["type"], paid["via"]), ("paid", "mandate"))
-        order = next(d for m, p, _, d in fake.calls if p == "/v2/checkout/orders" and d and "vault_id" in json.dumps(d))
-        self.assertEqual(order["purchase_units"][0]["payee"], {"email_address": "sb-harbor@business.example.com"})
-        self.assertEqual(order["purchase_units"][0]["amount"]["value"], "299.00")
-        self.assertEqual(sum(p == "/v2/checkout/orders" for _, p, _, _ in fake.calls), 1)  # blocked ones never reach PayPal
+        self.assertEqual((paid["type"], paid["mode"], paid["purchase"]["order_id"]), ("paid", "sandbox", f"BATCH-{pid}"))
+        item = fake.payouts()[0]["items"][0]
+        self.assertEqual((item["receiver"], item["amount"]["value"]), ("sb-harbor@business.example.com", "299.00"))
+        self.assertEqual(len(fake.payouts()), 1)                        # blocked ones never reach PayPal
+        self.assertEqual(fake.refunds[0][:2], ("CAP-ORDER1", "101.00"))  # stop: the unspent 101 goes back
+        events = c.get(f"/api/runs/{wid}").json()["events"]
+        self.assertIn("withdrawn", [e["type"] for e in events])
+        self.assertEqual((events[-1]["type"], events[-1]["balance"]), ("closed", "0.00"))
 
 
 class Block(SimpleNamespace):
@@ -189,7 +212,7 @@ def turn(*blocks, stop="tool_use"):
 class LiveLoopTests(unittest.TestCase):
     def test_claude_asks_the_wallet_and_hears_its_answer(self):
         c = app(shopper=None)
-        wid = c.post("/api/wallets", json={}).json()["wallet_id"]
+        wid = open_wallet(c)["wallet_id"]
         service = c.app.state.wallets
         fake = FakeClaude([
             turn(Block(type="text", text="Trying the outlet."),
