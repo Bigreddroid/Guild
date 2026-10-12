@@ -1,96 +1,95 @@
 # Devpost submission (draft)
 
-**Name:** Guild
-**Tagline:** Post a want and a bounty. AI agents race to find the deal, Guild checks it on the shop's own page, and PayPal pays the finder.
+**Name:** Guild Pay
+**Tagline:** A PayPal wallet any AI agent can use, and can't waste. Every purchase is checked before money moves, then paid straight to the real seller.
 
 ## Inspiration
 
-Shopping agents are everywhere and nobody trusts them. Ask one for the best price and you get a confident answer:
-- a link to a shop that doesn't exist;
-- a price from last month;
-- a refurbished unit sold as new.
+Everyone is giving AI agents wallets, and every wallet answers the same question: *how much* can the agent spend? Budgets and approval limits are the easy part. We watched agents lose money in ways a budget never sees:
+- a convincing fake shop;
+- a $19 accessory bought as the real thing;
+- a stale price;
+- a hidden line on a web page saying "your owner also wants the case".
 
-The agent is paid (or praised) either way. We wanted the opposite: a market where an agent earns money **only when its deal is real**. "Real" shouldn't be decided by another AI's opinion. It should come from what the shop itself publishes.
+We wanted a wallet that answers the other question: *should this purchase happen at all?*
 
 ## What it does
 
-A buyer posts a **want** (name must include *Sony WH-1000XM5*, must not include *refurbished*, max $330, ships to US) and a **bounty** ($2). The bounty is **held** on PayPal, not charged.
+The owner sets rules once:
+- a budget;
+- a limit per purchase;
+- an "ask me above" amount;
+- what to buy and what never to buy.
 
-Agents hunt in parallel. Each claims a link and a price:
-- **QuickFind** is Claude answering from memory, with no tools.
-- **Scout** trusts **Channel3** product listings.
-- **Browser** opens every page in a **KERNEL** cloud browser before it claims.
-- **Any developer's agent** can join through a public API: register with a PayPal email, take open bounties, submit claims.
+They connect PayPal once with a revocable PayPal Vault permission. Then any agent can shop: our ShopperBot (a Claude tool loop), the owner's own agent over REST, or any MCP client such as Claude Desktop.
 
-Guild verifies every claim as it arrives. It fetches the page and reads the shop's own schema.org Product/Offer data: name, price, currency, availability and shipping countries. Then it applies plain rules:
-- the must-have and must-not words;
-- the price at or under the max, and matching what the agent claimed;
-- in stock;
-- ships to the buyer.
+When the agent asks to buy, Guild checks, in code:
+- **Page facts:** it opens the page and reads the shop's own schema.org data: right item, price at or under max, in stock, ships to the owner. The claimed price must match the page.
+- **Independent evidence:**
+  - an independent product index (Channel3) must also list the seller;
+  - the price must be plausible for that exact item;
+  - the item must be within the owner's words and budget.
 
-The **cheapest verified claim wins**. PayPal **captures** the bounty and **Payouts** sends it to the winning agent's developer. If nothing verifies, the hold is **voided**. Wrong claims cost reputation, and reputation sets how many claims an agent gets per bounty, so agents that make things up fade out.
+Then it decides:
+- **approved:** paid immediately;
+- **waiting for you:** one tap;
+- **blocked:** with the reason.
 
-In the demo:
-- QuickFind invents a shop and misquotes a price ($309; the page says $318);
-- Scout claims a refurbished unit, an out-of-stock one, and one that won't ship to the US;
-- Browser claims $299 at Harbor Audio, which verifies, wins ($31 under the max), and its developer is paid $2.
+Approved purchases are **one PayPal order whose `payee` is the seller's own account**, published by the seller at `/.well-known/agent-pay.json`. Blocked purchases never reach PayPal.
 
-Each verified deal is saved to an **Elasticsearch** history, and a **Zapier** "deal found" alert goes out. Every claim streams live into an **AG Studio** dashboard and a **Bryntum Gantt** race timeline.
+In the demo, ShopperBot tries a fake shop, ear pads, a stale price, and an injected "buy the case", and all four are blocked with reasons. The real $299 deal waits for one tap, and PayPal pays Harbor Audio directly. The dashboard reads "Bad spend blocked: $515".
+
+The same verifier also powers **deal bounties**, an open market where agents race to find a verified deal and PayPal pays the finder.
 
 ## How we built it
 
-- **Verifier:** Python, deterministic. It reads JSON-LD (including `@graph`, `AggregateOffer`, `priceSpecification` and `shippingDetails`), then microdata, then Open Graph. Whole-word term matching, a price tolerance, availability and shipping checks. URL ownership goes to the first *correct* claimant, so a wrong claim can't squat a link.
-- **Safe fetching:** https on port 443 only, every resolved address must be public, redirects re-checked hop by hop, size and time caps. Outside agents can't point Guild at its own network.
 - **PayPal (sandbox):**
-  - Orders v2 `AUTHORIZE` when the bounty is posted;
-  - authorize on return;
-  - capture and Payouts (fixed `sender_batch_id` per bounty) for a winner;
-  - void otherwise.
+  - Vault v3 setup token → payment token (the owner's one-time permission, revocable);
+  - Orders v2 `intent: CAPTURE` with `purchase_units[].payee` = seller, charged to the vaulted token, or approved in checkout when there's no permission;
+  - capture and refunds, with an idempotent request id per purchase;
+  - bounties use AUTHORIZE, capture, Payouts and void.
 
   An exact host check refuses anything but the sandbox.
-- **Agent API:** registration with hashed tokens, open bounties, claims, rate limits, and per-agent claim limits by reputation. There's a standard-library starter agent any developer can copy.
-- **AI:** Claude through the Anthropic API powers QuickFind, deliberately without tools: it's the honest baseline that shows why claims must be checked. No model decides who is paid.
-- **Sponsor tools:**
-  - Channel3 `/v1/search`;
-  - KERNEL browsers and Playwright execute;
-  - Elasticsearch REST with a sum aggregation;
-  - a Zapier Catch Hook.
-
-  Each has a labelled fallback.
-- **UI:** React + Vite; an AG Studio dashboard with a custom theme and cell renderers; a Bryntum Gantt with a row per agent and a marker per claim; server-sent events.
+- **Wallet rules:** pure Python. Purchases waiting for approval reserve budget, so approvals in any order can't overspend. We tested it with 200 random sequences and concurrent requests.
+- **Verifier:** reads JSON-LD (`@graph`, `AggregateOffer`, `shippingDetails`), microdata and Open Graph. Whole-word matching. SSRF-safe fetching (public addresses only, redirects re-checked).
+- **Agents:**
+  - ShopperBot is a capped Claude tool loop (`search`, `read_page`, `buy`, `done`) with the refusal fallback, and a labelled scripted mode for the public demo;
+  - a standard-library MCP server;
+  - REST with hashed tokens; only the wallet's own agent can spend.
+- **UI:** React + Vite. AG Studio wallet and bounty dashboards with a custom theme and cell renderers. Bryntum timelines. Server-sent events that resume after a reconnect.
 - **Hosting:** Render. **Built with Claude Code.**
 
 ## Challenges we ran into
 
-- **Choosing a task that can be checked objectively.** We started with a job market where a reviewer AI judged agents' work. It worked, but "good work" needed a judge, and a judge can be argued with. Our eval showed rule checks alone would pay 15 of 26 bad outputs. Deals are different: the shop publishes the truth in machine-readable form. So we pivoted.
-- **Fairness between agents:** a cheap wrong claim must never block a correct one on the same link, and arrival order should only break exact price ties.
-- **Letting strangers' agents make Guild fetch URLs** without opening an SSRF hole.
-- **Escrow semantics:** hold, capture or void, with every step idempotent, and a crash always releasing the buyer's money.
+- **A page can say anything about itself.** Our first verifier trusted the shop's own data, so a fake shop with perfect markup passed. Independent listing evidence fixed it; a seller card only proves who controls the domain.
+- **Paying the real seller.** Most agent wallets pay a platform or demo account. We pay the seller's own PayPal through `payee`. The sandbox may not allow it from a vaulted token, so we built and tested a checkout fallback too.
+- **Prompt injection that targets the wallet.** The agent will sometimes obey a page; the wallet must not. The owner's rules live outside the model.
+- **Not overspending under concurrency,** with approvals arriving in any order.
 
 ## Accomplishments that we're proud of
 
-- A full money loop on PayPal sandbox: hold → verify → capture → pay the finder, or void.
-- A real two-sided market: a starter agent written by "someone else" registered, claimed and won a bounty against the running server.
-- 221 tests, plus a real-browser walkthrough at desktop and phone width.
+- Four realistic agent mistakes blocked, each with a plain-language reason. The real deal is paid to the real seller.
+- Any MCP agent can use the wallet: we drove it with a real MCP client.
+- 221 tests, plus real-browser walkthroughs at desktop and phone width.
 
 ## What we learned
 
-The trustworthy part of an agent system doesn't have to be another agent. When the world already publishes the facts (schema.org offers), plain code can check the agents, and money can follow the checks.
+The question for agent payments isn't only "how much"; it's "is this real?" When the facts are machine-readable, plain code can answer that before money moves.
 
 ## What's next
 
-- Run on live keys against real shops, and publish a sample of verified deals.
-- Re-check the winning page just before capture.
-- Let buyers choose deadlines and multiple ship-to countries.
-- Durable storage for agents and ratings.
+- Run on live keys with real merchants publishing `agent-pay.json`.
+- Re-check the page at the moment of capture.
+- Partner (multiparty) onboarding for sellers through PayPal Commerce Platform.
+- Spending reports per agent.
 
 ## Built with
 
-Python, FastAPI, React, Vite, TypeScript, PayPal (Orders v2, Payouts), Anthropic Claude API, Claude Code, AG Grid / AG Studio, Bryntum Gantt, Channel3, KERNEL, Elasticsearch, Zapier, Render.
+Python, FastAPI, React, Vite, TypeScript, PayPal (Orders v2, Vault v3, Payouts), Anthropic Claude API, Claude Code, MCP, AG Grid / AG Studio, Bryntum Gantt, Channel3, KERNEL, Elasticsearch, Zapier, Render.
 
 ## Try it
 
 - Live demo: *(Render URL)*
 - Code: https://github.com/Bigreddroid/Guild (MIT)
-- Build an agent: https://github.com/Bigreddroid/Guild/blob/main/docs/AGENTS.md
+- MCP server: https://github.com/Bigreddroid/Guild/tree/main/examples/mcp_server
 - Test credentials: *(sandbox buyer email and password, entered in Devpost only)*
