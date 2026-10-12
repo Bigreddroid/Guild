@@ -41,6 +41,8 @@ from guild.registry import Registry, RegistryError, default_registry
 from guild.lead import DEMO_GOAL
 from guild.paypal import PayPalError
 from guild.run import run
+from guild.wallet_api import WalletService, mount as mount_wallets
+from guild.walletpay import WalletPay
 
 MAX_RUNS = 50                    # runs kept in memory for replay
 MAX_BUDGET = Decimal("10.00")    # sandbox demo cap
@@ -153,7 +155,7 @@ def default_deal_log() -> DealLog:
 def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hunters=None,
                hunt_speed: float = HUNT_SPEED, registry: Optional[Registry] = None,
                hunt_deadline_s: float = HUNT_DEADLINE_S, deals: Optional[DealLog] = None,
-               trust=None) -> FastAPI:
+               trust=None, shopper=_NOT_SET) -> FastAPI:
     """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
     `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
@@ -341,6 +343,9 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                 "funding": bool(funds and public_url),
                 "deal_history": deal_log.store, "deal_alerts": "Zapier" if deal_log.zapier else "off",
                 "outside_agents": len(agents_registry),
+                "wallets": {"payments": wallet_service.pay.mode,
+                            "shopperbot": "live (Claude)" if os.environ.get("ANTHROPIC_API_KEY")
+                            and os.environ.get("GUILD_SHOPPER_LIVE") == "1" else "scripted"},
                 "prototype": {"lead": lead.label, "reviewer": reviewer.label,
                               "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes()}}
 
@@ -417,14 +422,18 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         return {"run_id": run_id, "done": r.done, "events": list(r.events)}
 
     @app.get("/api/runs/{run_id}/events")
-    async def stream(run_id: str, delay: float = STEP_DELAY_S):
+    async def stream(run_id: str, request: Request, delay: float = STEP_DELAY_S):
         r = runs.get(run_id)
         if r is None:
             raise HTTPException(404, "unknown run")
         delay = min(max(delay, 0.0), 3.0)
+        try:  # a reconnecting browser resumes after the last event it saw
+            start = int(request.headers.get("last-event-id", "-1")) + 1
+        except ValueError:
+            start = 0
 
         async def gen():
-            i, deadline = 0, time.monotonic() + STREAM_TIMEOUT_S
+            i, deadline = max(0, start), time.monotonic() + STREAM_TIMEOUT_S
             while time.monotonic() < deadline:
                 if i < len(r.events):
                     event = r.events[i]
@@ -440,6 +449,29 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
 
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # ---------------------------------------------------------------- Guild Pay wallets
+
+    def new_wallet_run():
+        r = Run()
+        run_id = uuid.uuid4().hex[:12]
+        with lock:
+            runs[run_id] = r
+            while len(runs) > MAX_RUNS:
+                oldest = next(iter(runs))
+                if not runs[oldest].done:
+                    break
+                runs.pop(oldest)
+        return run_id, r
+
+    wallet_service = WalletService(hunt_fetch, make_trust, WalletPay(paypal, public_url or ""), new_wallet_run)
+    if shopper is _NOT_SET:
+        from guild.shopper import start_shopper_from_env as shopper_fn
+    else:
+        shopper_fn = shopper
+    mount_wallets(app, wallet_service, read_json, client_key, bearer, RateLimiter(limit=30, window_s=60),
+                  start_house_agent=shopper_fn)
+    app.state.wallets = wallet_service
 
     if (WEB_DIST / "index.html").exists():
         # Gzip only the static bundle (the event stream must not be buffered).

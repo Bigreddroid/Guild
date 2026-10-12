@@ -114,7 +114,7 @@ pip install -r requirements.txt
 python3 -m guild                      # a bounty, narrated in the terminal
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000
-python3 -m unittest discover -s tests # 210 tests
+python3 -m unittest discover -s tests # 221 tests
 ```
 
 **Deploy:** create a Render Blueprint from this repo (it reads `render.yaml`), then add keys in Render's *Environment* settings. Never commit them.
@@ -176,7 +176,7 @@ guild/
   market.py  run.py  agents.py  brain.py  ...  the earlier prototype (see below)
 examples/agent_starter/   a stdlib-only agent any developer can copy
 web/src/         React: want form, AG Studio claims dashboard, Bryntum timeline, leaderboard
-tests/           210 unit and integration tests
+tests/           221 unit and integration tests
 docs/            agent guide, architecture, setup, judges' guide, Devpost text, video script
 ```
 
