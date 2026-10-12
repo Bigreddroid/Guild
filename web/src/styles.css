@@ -117,7 +117,15 @@ button { font: inherit; cursor: pointer; }
 .tabs button { border: 0; background: #fff; padding: 10px 16px; font-weight: 600; color: var(--muted); min-height: 44px; }
 .tabs button.on { background: var(--accent); color: #fff; }
 .tab-intro { margin: 12px 0 0; color: var(--muted); font-size: 14px; max-width: 980px; }
-.wallet-form { grid-template-columns: 1.2fr 1.4fr .7fr .45fr .65fr .75fr .65fr auto; }
+.wallet-form { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.wallet-form .f-must_have, .wallet-form .f-must_not { grid-column: span 2; }
+.wallet-form .actions { grid-column: span 2; }
+.envelopes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.envelopes li { display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.env-name { font-weight: 600; text-transform: capitalize; }
+.envelopes .env-bar { margin: 0; height: 8px; }
+.env-left { color: var(--muted); white-space: nowrap; }
+.pill-cat { background: #e0eaff; color: #3538cd; text-transform: capitalize; }
 .wallet-bar .wallet-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .wallet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .wallet-actions button, .buy-actions button { border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; min-height: 40px; }
@@ -136,6 +144,7 @@ button.ghost { background: #eef1f6; color: var(--ink); }
 .buy { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
 .buy-head { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
 .buy-head .pill { margin-left: auto; }
+.buy-head .pill-cat + .pill { margin-left: 0; }
 .buy-icon { font-weight: 800; width: 16px; }
 .buy-blocked { border-left: 4px solid var(--bad); }
 .buy-pending { border-left: 4px solid #e3a008; background: #fffcf2; }
@@ -154,11 +163,14 @@ button.ghost { background: #eef1f6; color: var(--ink); }
 .studio-box-wallet { height: 900px; }
 @media (max-width: 1100px) {
   .wallet-form { grid-template-columns: 1fr 1fr 1fr; }
+  .wallet-form .f-must_have, .wallet-form .f-must_not, .wallet-form .actions { grid-column: auto; }
 }
 @media (max-width: 480px) {
   .top { flex-direction: column; align-items: stretch; }
   .tabs { width: 100%; }
   .tabs button { flex: 1; }
   .wallet-form { grid-template-columns: 1fr 1fr; }
-  .wallet-form .f-must_have, .wallet-form .f-must_not { grid-column: 1 / -1; }
+  .wallet-form .f-must_have, .wallet-form .f-must_not, .wallet-form .actions { grid-column: 1 / -1; }
+  .envelopes li { grid-template-columns: 74px 1fr; }
+  .env-left { grid-column: 2; }
 }

@@ -7,8 +7,10 @@ export type WalletEvent = { type: string; [key: string]: any };
 export interface Purchase {
   id: string; url: string; item: string; price: number; status: string; reasons: string[];
   checks: Record<string, boolean>; seller: string; order_id: string; at: number; shop: string; page_price: number | null;
+  category: string;
 }
-export interface Totals { budget: number; spent: number; reserved: number; remaining: number }
+export interface Envelope { name: string; limit: number; spent: number; reserved: number; remaining: number }
+export interface Totals { budget: number; spent: number; reserved: number; remaining: number; envelopes: Envelope[] }
 export interface Line { text: string; tone: '' | 'good' | 'bad' | 'wait' | 'agent' }
 export interface WalletView {
   id: string; agent: string; mode: string; want: string; mustHave: string[]; mustNot: string[];
@@ -30,7 +32,7 @@ export function shopOf(url: string): string {
 
 export function emptyWallet(): WalletView {
   return { id: '', agent: '', mode: '', want: '', mustHave: [], mustNot: [], maxPerPurchase: 0, approveAbove: 0,
-           totals: { budget: 0, spent: 0, reserved: 0, remaining: 0 }, purchases: [], story: [], closed: false,
+           totals: { budget: 0, spent: 0, reserved: 0, remaining: 0, envelopes: [] }, purchases: [], story: [], closed: false,
            mandate: false, checkoutUrl: '', refundedAmount: 0 };
 }
 
@@ -44,14 +46,17 @@ export function reduceWallet(events: WalletEvent[]): WalletView {
   const byId = new Map<string, Purchase>();
   const say = (text: string, tone: Line['tone'] = '') => v.story.push({ text, tone });
   const totals = (e: WalletEvent) => {
-    if (e.budget !== undefined) v.totals = { budget: num(e.budget), spent: num(e.spent), reserved: num(e.reserved), remaining: num(e.remaining) };
+    if (e.budget === undefined) return;
+    const envelopes = (e.envelopes ?? []).map((x: any) => ({ name: String(x.name), limit: num(x.limit), spent: num(x.spent),
+                                                             reserved: num(x.reserved), remaining: num(x.remaining) }));
+    v.totals = { budget: num(e.budget), spent: num(e.spent), reserved: num(e.reserved), remaining: num(e.remaining), envelopes };
   };
   const upsert = (p: any, extra: Partial<Purchase> = {}): Purchase => {
     const old = byId.get(p.id);
     const row: Purchase = {
       id: p.id, url: p.url, item: p.item, price: num(p.price), status: p.status, reasons: p.reasons ?? [],
       checks: p.checks ?? {}, seller: p.seller ?? '', order_id: p.order_id ?? '', shop: shopOf(p.url),
-      at: old?.at ?? 0, page_price: old?.page_price ?? null, ...extra,
+      category: p.category ?? 'shopping', at: old?.at ?? 0, page_price: old?.page_price ?? null, ...extra,
     };
     if (!old) v.purchases.push(row);
     else Object.assign(old, row);
@@ -73,7 +78,7 @@ export function reduceWallet(events: WalletEvent[]): WalletView {
         break;
       case 'purchase': {
         const p = upsert(e.purchase, { at: num(e.at), page_price: e.page_price == null ? null : num(e.page_price) });
-        const head = `${money(p.price)} · ${p.item} at ${p.shop}`;
+        const head = `${money(p.price)} · ${p.item} at ${p.shop}${p.category !== 'shopping' ? ` (${p.category})` : ''}`;
         if (p.status === 'blocked') say(`✗ Blocked ${head}: ${p.reasons.join('; ')}`, 'bad');
         else if (p.status === 'pending') say(`‖ Waiting for you: ${head}. Every check passed.`, 'wait');
         else say(`✓ Approved ${head}: every check passed and it's within your rules.`, 'good');

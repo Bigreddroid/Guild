@@ -24,7 +24,8 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 TOOLS = [
     {"name": "wallet_status",
-     "description": "The wallet's budget, what is spent, reserved and left, the owner's want, and every purchase so far.",
+     "description": ("The wallet's budget and envelopes (e.g. shopping, marketing, tools): what is spent, "
+                     "reserved and left in each, the owner's want, and every purchase so far."),
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "search_products",
      "description": "Search Guild's labelled demo product index (use your own search for real shops).",
@@ -36,7 +37,8 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "url": {"type": "string", "description": "https product page"},
          "item": {"type": "string", "description": "what it is, in a few words"},
-         "price": {"type": "string", "description": "the price shown on the page, e.g. 299.00"}},
+         "price": {"type": "string", "description": "the price shown on the page, e.g. 299.00"},
+         "category": {"type": "string", "description": "which envelope pays, e.g. shopping (default), marketing, tools"}},
          "required": ["url", "item", "price"], "additionalProperties": False}},
 ]
 
@@ -68,8 +70,10 @@ class Server:
             body = {"demo": True, "listings": [l for l in body.get("listings", [])
                                                if all(w in l.get("title", "").lower() for w in q)]}
         elif name == "buy":
-            status, body = self.call("POST", f"/api/wallets/{self.wallet_id}/purchases",
-                                     {k: str(args.get(k, "")) for k in ("url", "item", "price")})
+            body = {k: str(args.get(k, "")) for k in ("url", "item", "price")}
+            if args.get("category"):
+                body["category"] = str(args["category"])
+            status, body = self.call("POST", f"/api/wallets/{self.wallet_id}/purchases", body)
         else:
             return f"unknown tool {name}", True
         return json.dumps(body, indent=1), status >= 400

@@ -10,9 +10,26 @@ const EVENTS = ['wallet', 'agent', 'purchase', 'approved', 'rejected', 'paid', '
 const MCP = 'https://github.com/Bigreddroid/Guild/tree/main/examples/mcp_server';
 
 interface Form { must_have: string; must_not: string; max_price: string; ship_to: string; budget: string;
-                 max_per_purchase: string; approve_above: string }
+                 max_per_purchase: string; approve_above: string; marketing: string; tools: string; people: string }
 const DEMO: Form = { must_have: 'Sony, WH-1000XM5', must_not: 'refurbished, renewed, used, case', max_price: '330',
-                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250' };
+                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250',
+                     marketing: '', tools: '', people: '' };
+const SIDE_ENVELOPES = ['marketing', 'tools', 'people'] as const;
+
+// The form's envelope amounts become the API's envelopes; shopping keeps whatever is left.
+function walletBody(f: Form): Record<string, unknown> {
+  const { marketing, tools, people, ...rest } = f;
+  const amounts = { marketing, tools, people };
+  const side = SIDE_ENVELOPES.filter(n => Number(amounts[n]) > 0);
+  if (!side.length) return rest;
+  const shopping = Number(f.budget) - side.reduce((sum, n) => sum + Number(amounts[n]), 0);
+  const most = Math.min(Number(f.max_per_purchase), shopping);
+  const envelopes: Record<string, Record<string, string>> = {};
+  if (shopping > 0) envelopes.shopping = { limit: shopping.toFixed(2), max_per_purchase: most.toFixed(2),
+                                           approve_above: Math.min(Number(f.approve_above), most).toFixed(2) };
+  for (const n of side) envelopes[n] = { limit: Number(amounts[n]).toFixed(2) };
+  return { ...rest, envelopes };
+}
 
 const keyFor = (id: string) => `guildpay:key:${id}`;
 const loadKey = (id: string) => { try { return sessionStorage.getItem(keyFor(id)) ?? ''; } catch { return ''; } };
@@ -27,6 +44,7 @@ function PurchaseCard({ p, owner, act }: { p: Purchase; owner: boolean; act: (id
         <span className="buy-icon" aria-hidden>{ICON[p.status] ?? '•'}</span>
         <b>{money(p.price)}</b> <span className="buy-item">{p.item}</span>
         <span className="muted"> · {p.shop}</span>
+        {p.category !== 'shopping' && <span className="pill pill-cat">{p.category}</span>}
         <span className={`pill pill-${p.status}`}>{p.status === 'pending' ? 'waiting for you' : p.status}</span>
       </div>
       <div className="buy-why">{p.reasons.join('; ')}</div>
@@ -79,7 +97,7 @@ export default function Wallet() {
   const start = async () => {
     setBusy(true); setError('');
     try {
-      const r = await fetch('/api/wallets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      const r = await fetch('/api/wallets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(walletBody(form)) });
       const body = await r.json();
       if (!r.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`);
       saveKey(body.wallet_id, body.owner_key);
@@ -139,6 +157,9 @@ export default function Wallet() {
         {field('budget', 'Budget (USD)', { inputMode: 'decimal' })}
         {field('max_per_purchase', 'Max per purchase', { inputMode: 'decimal' })}
         {field('approve_above', 'Ask me above', { inputMode: 'decimal' })}
+        {field('marketing', 'Marketing envelope', { inputMode: 'decimal', placeholder: 'none' })}
+        {field('tools', 'Tools envelope', { inputMode: 'decimal', placeholder: 'none' })}
+        {field('people', 'People envelope', { inputMode: 'decimal', placeholder: 'none' })}
         <div className="actions"><button type="submit" disabled={busy}>{busy ? 'Opening…' : 'Give ShopperBot this wallet'}</button></div>
       </form>
 
@@ -164,6 +185,24 @@ export default function Wallet() {
           {view.mode && <> · payments: {view.mode === 'preview' ? 'preview (no PayPal keys)' : 'PayPal sandbox'}</>}
           {view.closed && <> · closed</>}
         </div>
+        {t.envelopes.length > 1 && (
+          <ul className="envelopes" aria-label="Envelopes">
+            {t.envelopes.map(e => {
+              const w = (n: number) => `${e.limit ? Math.min(100, (n / e.limit) * 100) : 0}%`;
+              return (
+                <li key={e.name}>
+                  <span className="env-name">{e.name}</span>
+                  <span className="budget env-bar" role="img"
+                    aria-label={`${e.name}: spent ${money(e.spent)}, waiting ${money(e.reserved)}, left ${money(e.remaining)} of ${money(e.limit)}`}>
+                    <span className="b-spent" style={{ width: w(e.spent) }} />
+                    <span className="b-wait" style={{ width: w(e.reserved) }} />
+                  </span>
+                  <span className="env-left small">{money(e.remaining)} left of {money(e.limit)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
         {error && <div className="error" role="alert">{error}</div>}
       </section>
 

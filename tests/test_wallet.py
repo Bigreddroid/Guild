@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from guild import shops
 from guild.bounty import Claim, Offer, Trust, Verdict, verify
 from guild.fetcher import SafeFetcher
-from guild.wallet import (APPROVED, BLOCKED, FAILED, PAID, PENDING, REJECTED, Policy, PolicyError, Wallet,
-                          WalletError)
+from guild.wallet import (APPROVED, BLOCKED, FAILED, PAID, PENDING, REJECTED, Envelope, Policy, PolicyError,
+                          Wallet, WalletError)
 
 WANT = shops.DEMO_WANT
 PAYEE = {"email_address": "seller@business.example.com"}
@@ -19,8 +19,19 @@ FETCH = SafeFetcher(local=shops.serve)
 TRUST = Trust(listings=tuple(shops.catalogue()), seller_of=shops.seller_of)
 
 
-def policy(budget="400", each="350", ask="250"):
-    return Policy(Decimal(budget), Decimal(each), Decimal(ask), WANT)
+def policy(budget="400", each="350", ask="250", envelopes=None):
+    return Policy(Decimal(budget), Decimal(each), Decimal(ask), WANT, envelopes)
+
+
+def env(limit, each=None, ask=None):
+    each = each or limit
+    return Envelope(Decimal(limit), Decimal(each), Decimal(ask or each))
+
+
+def split():
+    """A $400 wallet: shopping 200, marketing 120 (ask above 50), tools 80 (at most 30 each)."""
+    return policy(envelopes={"shopping": env("200", "200", "150"), "marketing": env("120", "100", "50"),
+                             "tools": env("80", "30")})
 
 
 def ok(price, url="https://shop.example/p"):
@@ -61,7 +72,12 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(any("usual" in r for r in pads.reasons))
         self.assertIn("claimed 309.00, page says 318.00", misquote.reasons)
         self.assertTrue(any("has case" in r for r in case.reasons))
-        self.assertEqual(w.totals(), {"budget": "400.00", "spent": "0.00", "reserved": "299.00", "remaining": "101.00"})
+        totals = w.totals()
+        self.assertEqual({k: totals[k] for k in ("budget", "spent", "reserved", "remaining")},
+                         {"budget": "400.00", "spent": "0.00", "reserved": "299.00", "remaining": "101.00"})
+        self.assertEqual(totals["envelopes"], [{"name": "shopping", "limit": "400.00", "spent": "0.00",
+                                                "reserved": "299.00", "remaining": "101.00",
+                                                "max_per_purchase": "350.00", "approve_above": "250.00"}])
         w.approve(harbor.id)
         self.assertEqual(w.totals()["spent"], "299.00")
         w.record_payment(harbor.id, order_id="ORDER-1")
@@ -123,6 +139,56 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaises(WalletError):
             w2.approve(p2.id)
         self.assertEqual(w2.decide("https://a.example/2", "x", ok("1"), payee=PAYEE).status, BLOCKED)
+
+
+class EnvelopeTests(unittest.TestCase):
+    def test_bad_envelopes_are_refused(self):
+        for envelopes in ({}, {"Marketing!": env("10")}, {"a": env("300"), "b": env("200")},  # adds up past 400
+                          {"a": env("0", "1")}, {"a": Envelope(Decimal("50"), Decimal("60"), Decimal("0"))},
+                          {"a": Envelope(Decimal("50"), Decimal("40"), Decimal("45"))}, {"a": "50"},
+                          {f"e{i}": env("10") for i in range(9)}):
+            with self.assertRaises(PolicyError, msg=envelopes):
+                policy(envelopes=envelopes)
+        self.assertEqual(list(split().envelopes), ["shopping", "marketing", "tools"])
+
+    def test_each_purchase_fits_its_envelope_and_the_budget(self):
+        w = Wallet("w", "a", split())
+        ad = w.decide("https://a.example/ad", "ad", ok("45"), payee=PAYEE, category="marketing")
+        post = w.decide("https://a.example/post", "post", ok("60"), payee=PAYEE, category="marketing")
+        self.assertEqual((ad.status, post.status, ad.category), (APPROVED, PENDING, "marketing"))
+        self.assertEqual(post.reasons, ["60.00 is above 50: waiting for the owner"])  # the envelope's own ask amount
+        over = w.decide("https://a.example/more", "more", ok("20"), payee=PAYEE, category="marketing")
+        self.assertEqual(over.reasons, ["20.00 is over the marketing envelope left (15.00)"])  # 120 - 45 - 60
+        self.assertEqual(w.decide("https://a.example/t", "t", ok("31"), payee=PAYEE, category="tools").reasons,
+                         ["31.00 is over the 30 limit per tools purchase"])
+        self.assertEqual(w.decide("https://a.example/s", "s", ok("20"), payee=PAYEE).status, APPROVED)  # shopping
+        self.assertEqual(w.decide("https://a.example/x", "x", ok("5"), payee=PAYEE, category="travel").reasons,
+                         ["there is no 'travel' envelope in this wallet"])
+        envs = {e["name"]: e for e in w.totals()["envelopes"]}
+        self.assertEqual((envs["marketing"]["spent"], envs["marketing"]["reserved"], envs["marketing"]["remaining"]),
+                         ("45.00", "60.00", "15.00"))
+        self.assertEqual((envs["shopping"]["spent"], envs["tools"]["remaining"]), ("20.00", "80.00"))
+        self.assertEqual(w.totals()["remaining"], "275.00")
+        w.reject(post.id)  # a rejected purchase frees its envelope
+        self.assertEqual(w.remaining("marketing"), Decimal("75.00"))
+
+    def test_random_sequences_never_overspend_any_envelope(self):
+        rng = random.Random(11)
+        names = ("shopping", "marketing", "tools", "nope")
+        for trial in range(100):
+            w = Wallet("w", "a", split())
+            for i in range(40):
+                if rng.random() < 0.65:
+                    w.decide(f"https://a.example/{rng.randint(1, 30)}", "x", ok(str(rng.randint(1, 210))),
+                             payee=PAYEE, category=rng.choice(names))
+                else:
+                    pend = [p for p in w.purchases if p.status == PENDING]
+                    if pend:
+                        (w.approve if rng.random() < 0.7 else w.reject)(rng.choice(pend).id)
+                for name, e in w.policy.envelopes.items():
+                    self.assertLessEqual(w.spent(name) + w.reserved(name), e.limit, (trial, i, name))
+                self.assertLessEqual(w.spent() + w.reserved(), Decimal("400"))
+                self.assertFalse(any(p.category == "nope" and p.status != BLOCKED for p in w.purchases))
 
 
 class BudgetInvariantTests(unittest.TestCase):
