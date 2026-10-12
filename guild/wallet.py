@@ -1,0 +1,195 @@
+"""The wallet's rules: what an AI agent may buy with its owner's money.
+
+The owner sets a Policy once: a budget, the most one purchase may cost, the amount
+above which they want to approve each purchase, and the want itself (what to buy,
+what not to buy, max price, ship-to). The agent can only ask to buy; the wallet
+decides, in code:
+
+    approved   the purchase is verified and within every rule
+    pending    verified and within budget, but above the owner's "ask me" amount
+    blocked    a rule failed; the reasons say which
+
+Purchases waiting for approval reserve their price, so the budget can never be
+overspent, whatever order approvals come in. Everything here is pure (no network,
+no PayPal); the server pays approved purchases and records the result.
+"""
+from __future__ import annotations
+
+import itertools
+import threading
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Optional
+
+from guild.bounty import Verdict, Want, canonical_url
+
+WALLET_MAX_BUDGET = Decimal("500.00")   # sandbox demo cap
+CENT = Decimal("0.01")
+
+APPROVED, PENDING, BLOCKED, REJECTED, PAID, FAILED = "approved", "pending", "blocked", "rejected", "paid", "failed"
+COMMITTED = (APPROVED, PAID)             # counts as spent
+OPEN = (PENDING,)                        # counts as reserved
+
+
+class PolicyError(ValueError):
+    pass
+
+
+class WalletError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Policy:
+    budget: Decimal
+    max_per_purchase: Decimal
+    approve_above: Decimal
+    want: Want
+
+    def __post_init__(self):
+        for name in ("budget", "max_per_purchase", "approve_above"):
+            v = getattr(self, name)
+            if not isinstance(v, Decimal) or not v.is_finite() or v < 0:
+                raise PolicyError(f"{name} must be a non-negative amount")
+        if not (Decimal("0") < self.budget <= WALLET_MAX_BUDGET):
+            raise PolicyError(f"budget must be more than 0 and at most {WALLET_MAX_BUDGET}")
+        if not (Decimal("0") < self.max_per_purchase <= self.budget):
+            raise PolicyError("max per purchase must be more than 0 and at most the budget")
+        if self.approve_above > self.max_per_purchase:
+            raise PolicyError("the approval amount can't be above the max per purchase")
+
+
+@dataclass
+class Purchase:
+    id: str
+    url: str
+    item: str
+    price: Decimal               # what will be paid: the price the page shows
+    status: str
+    reasons: list
+    checks: dict = field(default_factory=dict)
+    seller: str = ""
+    payee: Optional[dict] = None
+    order_id: str = ""
+
+    def public(self) -> dict:
+        return {"id": self.id, "url": self.url, "item": self.item, "price": f"{self.price:.2f}", "status": self.status,
+                "reasons": list(self.reasons), "checks": dict(self.checks), "seller": self.seller,
+                "order_id": self.order_id}
+
+
+class Wallet:
+    def __init__(self, wallet_id: str, agent_id: str, policy: Policy):
+        self.id, self.agent_id, self.policy = wallet_id, agent_id, policy
+        self.purchases: list = []
+        self.closed = self.stopped = False
+        self._lock = threading.RLock()
+        self._ids = itertools.count(1)
+
+    # ---------------------------------------------------------------- money totals
+
+    def _sum(self, statuses) -> Decimal:
+        return sum((p.price for p in self.purchases if p.status in statuses), Decimal("0"))
+
+    def spent(self) -> Decimal:
+        return self._sum(COMMITTED)
+
+    def reserved(self) -> Decimal:
+        return self._sum(OPEN)
+
+    def remaining(self) -> Decimal:
+        return self.policy.budget - self.spent() - self.reserved()
+
+    def totals(self) -> dict:
+        with self._lock:
+            return {"budget": f"{self.policy.budget:.2f}", "spent": f"{self.spent():.2f}",
+                    "reserved": f"{self.reserved():.2f}", "remaining": f"{self.remaining():.2f}"}
+
+    # ---------------------------------------------------------------- decisions
+
+    def decide(self, url: str, item: str, verdict: Verdict, seller: str = "", payee: Optional[dict] = None,
+               seller_problem: str = "") -> Purchase:
+        """The agent asks to buy `url`; `verdict` is the verifier's check of that page
+        against the owner's want. Returns the recorded purchase with its decision."""
+        with self._lock:
+            price = (verdict.offer.price if verdict.offer and verdict.offer.price else verdict.claim.price)
+            price = Decimal(price).quantize(CENT)
+            reasons = [] if verdict.valid else list(verdict.reasons)
+            if self.stopped:
+                reasons.insert(0, "the owner stopped this wallet")
+            elif self.closed:
+                reasons.insert(0, "this wallet is closed")
+            if price > self.policy.max_per_purchase:
+                reasons.append(f"{price} is over the {self.policy.max_per_purchase} limit per purchase")
+            if price > self.remaining():
+                reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
+            key = canonical_url(url)
+            if any(canonical_url(p.url) == key and p.status in COMMITTED + OPEN for p in self.purchases):
+                reasons.append("this item was already bought or is waiting for approval")
+            if payee is None:
+                reasons.append(seller_problem or "the seller publishes no PayPal account to pay")
+            status = BLOCKED if reasons else (PENDING if price > self.policy.approve_above else APPROVED)
+            if status == PENDING:
+                reasons = [f"{price} is above {self.policy.approve_above}: waiting for the owner"]
+            elif status == APPROVED:
+                reasons = ["verified and within every rule"]
+            purchase = Purchase(id=f"{self.id}-p{next(self._ids)}", url=url[:500], item=item[:160], price=price,
+                                status=status, reasons=reasons, checks=dict(verdict.checks), seller=seller,
+                                payee=payee if status != BLOCKED else None)
+            self.purchases.append(purchase)
+            return purchase
+
+    def _get(self, purchase_id: str) -> Purchase:
+        for p in self.purchases:
+            if p.id == purchase_id:
+                return p
+        raise WalletError("no such purchase")
+
+    def approve(self, purchase_id: str) -> Purchase:
+        with self._lock:
+            p = self._get(purchase_id)
+            if self.closed or self.stopped:
+                raise WalletError("this wallet is closed")
+            if p.status != PENDING:
+                raise WalletError(f"purchase is {p.status}, not waiting for approval")
+            p.status, p.reasons = APPROVED, ["approved by the owner"]   # its price was already reserved
+            return p
+
+    def reject(self, purchase_id: str) -> Purchase:
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.status != PENDING:
+                raise WalletError(f"purchase is {p.status}, not waiting for approval")
+            p.status, p.reasons = REJECTED, ["rejected by the owner"]
+            return p
+
+    def record_payment(self, purchase_id: str, order_id: str = "", error: str = "") -> Purchase:
+        """After PayPal: an approved purchase becomes paid, or failed (money released)."""
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.status != APPROVED:
+                raise WalletError(f"purchase is {p.status}, not approved")
+            if error:
+                p.status, p.reasons = FAILED, [f"payment failed: {error}"]
+            else:
+                p.status, p.order_id = PAID, order_id
+            return p
+
+    def stop(self) -> list:
+        """The owner's stop switch: no new purchases; anything waiting is rejected."""
+        with self._lock:
+            self.stopped = True
+            return self._drop_pending("the owner stopped this wallet")
+
+    def close(self) -> dict:
+        """End of the task: no new purchases; anything still waiting is dropped, unpaid."""
+        with self._lock:
+            self.closed = True
+            self._drop_pending("the wallet closed before the owner approved")
+            return self.totals()
+
+    def _drop_pending(self, why: str) -> list:
+        dropped = [p for p in self.purchases if p.status == PENDING]
+        for p in dropped:
+            p.status, p.reasons = REJECTED, [why]
+        return dropped
