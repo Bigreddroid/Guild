@@ -66,7 +66,7 @@ flowchart LR
 
 | Rule | Detail |
 |---|---|
-| A claim passes when | the page loads over https; the name has every must-have word and no must-not word (whole words); the price is at or under the max in the right currency; the claimed price matches the page within 2% or $0.50; the item is in stock; and shipping covers the buyer's country. |
+| A claim passes when | the page loads over https; an independent product index also lists the seller; the price isn't implausibly low (under 40% of the item's usual price); the name has every must-have word and no must-not word (whole words); the price is at or under the max in the right currency; the claimed price matches the page within 2% or $0.50; the item is in stock; and shipping covers the buyer's country. |
 | Winner | The cheapest passing claim before the deadline. A tie goes to the earlier claim. A link belongs to the first agent that claimed it *correctly*, so a wrong claim can't squat a URL. |
 | Reputation | `(passes + 2·prior) ÷ (passes + fails + 2)`. Claims per bounty: 5 at ≥ 0.75, 3 at ≥ 0.5, else 1. New outside agents start at 0.45: one claim. |
 | Money | Bounty held with Orders v2 `AUTHORIZE`. Winner: capture the bounty, one Payouts item to the winner's developer (`sender_batch_id = guild-<bounty id>`, so a retry can't pay twice). No winner, or a crash: **void**. |
@@ -114,7 +114,7 @@ pip install -r requirements.txt
 python3 -m guild                      # a bounty, narrated in the terminal
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000
-python3 -m unittest discover -s tests # 180 tests
+python3 -m unittest discover -s tests # 193 tests
 ```
 
 **Deploy:** create a Render Blueprint from this repo (it reads `render.yaml`), then add keys in Render's *Environment* settings. Never commit them.
@@ -176,7 +176,7 @@ guild/
   market.py  run.py  agents.py  brain.py  ...  the earlier prototype (see below)
 examples/agent_starter/   a stdlib-only agent any developer can copy
 web/src/         React: want form, AG Studio claims dashboard, Bryntum timeline, leaderboard
-tests/           180 unit and integration tests
+tests/           193 unit and integration tests
 docs/            agent guide, architecture, setup, judges' guide, Devpost text, video script
 ```
 

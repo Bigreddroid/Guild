@@ -32,7 +32,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from guild import funding, shops, vendor
 from guild.agents import agent_modes, default_agents
-from guild.bounty import Want, WantError, parse_want
+from guild.bounty import Trust, Want, WantError, parse_want
 from guild.deals import DealLog
 from guild.fetcher import SafeFetcher
 from guild.hunt import OpenHunt, run_hunt
@@ -119,6 +119,20 @@ class Run:
 _NOT_SET = object()
 
 
+def trust_from_env(want) -> Trust:
+    """Independent evidence for a want: Channel3's index when a key is set, otherwise
+    the labelled demo index. A failed search gives no listings, so claims fail closed."""
+    from guild.agents import _env_channel3
+    channel3 = _env_channel3(os.environ.get("CHANNEL3_API_KEY", ""))
+    listings = shops.catalogue()
+    if channel3:
+        try:
+            listings = channel3.search(" ".join(want.must_have), limit=20, max_price=float(want.max_price) * 2)
+        except Exception:
+            listings = []
+    return Trust(listings=tuple(listings), seller_of=shops.seller_of)
+
+
 def default_hunters_from_env() -> dict:
     """Deal-hunting agents, live wherever their keys are set."""
     from guild.agents import _env_channel3, _env_kernel
@@ -138,13 +152,15 @@ def default_deal_log() -> DealLog:
 
 def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hunters=None,
                hunt_speed: float = HUNT_SPEED, registry: Optional[Registry] = None,
-               hunt_deadline_s: float = HUNT_DEADLINE_S, deals: Optional[DealLog] = None) -> FastAPI:
+               hunt_deadline_s: float = HUNT_DEADLINE_S, deals: Optional[DealLog] = None,
+               trust=None) -> FastAPI:
     """`brain` is a callable returning (lead, reviewer); default: Claude when a key is set.
     `paypal` is a PayPalClient (sandbox) or None; default: from the environment."""
     from guild.brain import default_brain
 
     make_brain = brain or default_brain
     make_hunters = hunters or default_hunters_from_env
+    make_trust = trust or trust_from_env
     agents_registry = registry if registry is not None else default_registry()
     deal_log = deals if deals is not None else default_deal_log()
     open_hunts: dict = {}       # run id -> {"door", "want", "opened"}
@@ -174,7 +190,7 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                     # With outside agents registered, the bounty stays open for its whole window.
                     result = run_hunt(want, agents_registry.adopt(make_hunters()), hunt_fetch, r.emit, deadline_s=hunt_deadline_s,
                                       speed=hunt_speed, door=door, close_early=len(agents_registry) == 0,
-                                      on_winner=deal_log.on_winner(run_id))
+                                      on_winner=deal_log.on_winner(run_id), trust=make_trust(want))
                 finally:
                     open_hunts.pop(run_id, None)
                     agents_registry.save()  # every agent's reputation persists

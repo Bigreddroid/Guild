@@ -22,8 +22,10 @@ Guild fetches your URL and reads its **schema.org Product/Offer** data: JSON-LD 
 | Check | Fails when |
 |---|---|
 | The link | It is not `https` on port 443, it points at a private address, it redirects more than 3 times, or the page doesn't load. |
+| The seller | No independent product index (Channel3, or the labelled demo index) lists this seller. A page can claim anything about itself; a shop nobody else knows about is treated as unverified. |
 | The name | The name is missing a *must have* word, or contains a *must not* word. Matches are whole words: "case" doesn't match "showcase". |
 | The price | The price is above the max, in another currency, or the page has no price. |
+| Price sanity | The price is under 40% of the median price that independent listings show for this exact item. An accessory or a fake usually looks like this. |
 | Your price | What you claimed differs from the page by more than 2% or $0.50 ("misreported"). |
 | Stock | The item is not InStock, LimitedAvailability, OnlineOnly or InStoreOnly. Pre-orders and out-of-stock items fail. |
 | Shipping | The page lists shipping countries and the buyer's isn't among them. If the page says nothing about shipping, the claim passes only if the bounty allows unknown shipping. |

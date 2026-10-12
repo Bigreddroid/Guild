@@ -127,6 +127,45 @@ class Verdict:
     valid: bool
     reasons: list = field(default_factory=list)
     offer: Optional[Offer] = None
+    checks: dict = field(default_factory=dict)   # check name -> passed, for people and dashboards
+
+
+@dataclass(frozen=True)
+class Trust:
+    """Evidence from outside the claimed page. A page can say anything about itself, so
+    Guild also asks an independent product index (Channel3, or the labelled demo index)
+    whether it lists this seller, and what this item usually costs."""
+    listings: tuple                      # independent search results: {title, price, url, shop}
+    seller_of: Callable = None           # url -> seller id (default: the host)
+    sanity_floor: Decimal = Decimal("0.4")
+
+    def seller(self, url: str) -> str:
+        if self.seller_of:
+            return self.seller_of(url)
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        return host[4:] if host.startswith("www.") else host
+
+
+def cross_check(url: str, trust: Trust) -> Optional[str]:
+    """None if an independent listing comes from the same seller; otherwise the reason."""
+    if not trust.listings:
+        return "no independent listings to check this seller against"
+    seller = trust.seller(url)
+    if seller and seller in {trust.seller(str(l.get("url", ""))) for l in trust.listings}:
+        return None
+    return f"no independent source lists this seller ({seller or 'unknown'})"
+
+
+def typical_price(listings, want: Want) -> Optional[Decimal]:
+    """Median price of independent listings that are this exact item (same name rules)."""
+    prices = sorted(p for l in listings
+                    if all(_has(str(l.get("title", "")), t) for t in want.must_have)
+                    and not any(_has(str(l.get("title", "")), t) for t in want.must_not)
+                    and (p := _dec(l.get("price"))) is not None)
+    if len(prices) < 2:
+        return None  # too little evidence to call anything an outlier
+    mid = len(prices) // 2
+    return prices[mid] if len(prices) % 2 else ((prices[mid - 1] + prices[mid]) / 2).quantize(Decimal("0.01"))
 
 
 # ---------------------------------------------------------- page reading
@@ -289,8 +328,9 @@ def _has(name: str, term: str) -> bool:
     return _words(term).strip() != "" and _words(term) in _words(name)
 
 
-def verify(want: Want, claim: Claim, fetch: Callable[[str], tuple]) -> Verdict:
-    """Check one claim against the page. `fetch(url)` returns (status, html)."""
+def verify(want: Want, claim: Claim, fetch: Callable[[str], tuple], trust: Optional[Trust] = None) -> Verdict:
+    """Check one claim against the page. `fetch(url)` returns (status, html). With
+    `trust`, the seller must also be independently listed and the price plausible."""
     reasons = []
     parts = urllib.parse.urlsplit(claim.url)
     if parts.scheme != "https" or not parts.hostname:
@@ -308,26 +348,38 @@ def verify(want: Want, claim: Claim, fetch: Callable[[str], tuple]) -> Verdict:
     if offer is None:
         return Verdict(claim, False, ["page states no product price (no schema.org offer)"])
 
+    checks = {}
+
+    def check(name: str, problem: Optional[str]) -> None:
+        checks[name] = problem is None
+        if problem:
+            reasons.append(problem)
+
+    if trust is not None:
+        check("seller", cross_check(claim.url, trust))
     missing = [t for t in want.must_have if not _has(offer.name, t)]
-    if missing:
-        reasons.append(f"product name lacks {', '.join(missing)}")
     banned = [t for t in want.must_not if _has(offer.name, t)]
-    if banned:
-        reasons.append(f"product name has {', '.join(banned)}")
-    if offer.currency and offer.currency != want.currency:
-        reasons.append(f"priced in {offer.currency}, want {want.currency}")
-    if offer.price > want.max_price:
-        reasons.append(f"page price {offer.price} is over the max {want.max_price}")
+    check("name", "; ".join(filter(None, [missing and f"product name lacks {', '.join(missing)}",
+                                           banned and f"product name has {', '.join(banned)}"])) or None)
+    check("currency", f"priced in {offer.currency}, want {want.currency}"
+          if offer.currency and offer.currency != want.currency else None)
+    check("max_price", f"page price {offer.price} is over the max {want.max_price}" if offer.price > want.max_price else None)
     tolerance = max(PRICE_TOLERANCE_MIN, (claim.price * PRICE_TOLERANCE).quantize(Decimal("0.01")))
-    if abs(offer.price - claim.price) > tolerance:
-        reasons.append(f"claimed {claim.price}, page says {offer.price}")
-    if offer.availability not in IN_STOCK:
-        reasons.append(f"not in stock ({offer.availability or 'not stated'})")
+    check("claimed_price", f"claimed {claim.price}, page says {offer.price}"
+          if abs(offer.price - claim.price) > tolerance else None)
+    if trust is not None:
+        typical = typical_price(trust.listings, want)
+        check("sanity", f"price {offer.price} is {(offer.price / typical * 100):.0f}% of the usual {typical}: "
+                        f"likely an accessory, a part or not genuine"
+              if typical and offer.price < typical * trust.sanity_floor else None)
+    check("stock", f"not in stock ({offer.availability or 'not stated'})" if offer.availability not in IN_STOCK else None)
+    ship = None
     if offer.ship_countries is not None and want.ship_to.upper() not in offer.ship_countries:
-        reasons.append(f"does not ship to {want.ship_to}")
-    if offer.ship_countries is None and not want.allow_unknown_shipping:
-        reasons.append("page does not say where it ships")
-    return Verdict(claim, not reasons, reasons or ["matches the want"], offer)
+        ship = f"does not ship to {want.ship_to}"
+    elif offer.ship_countries is None and not want.allow_unknown_shipping:
+        ship = "page does not say where it ships"
+    check("shipping", ship)
+    return Verdict(claim, not reasons, reasons or ["matches the want"], offer, checks)
 
 
 def canonical_url(url: str) -> str:
