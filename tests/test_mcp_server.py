@@ -48,13 +48,18 @@ class McpServerTests(unittest.TestCase):
                            call(2, "buy", {"url": shops.TRAP_URL, "item": "XM5", "price": "149.00"}),
                            call(3, "buy", {"url": shops.url_for("harbor-audio/sony-wh-1000xm5-black"),
                                            "item": "XM5", "price": "299.00"}),
-                           call(4, "wallet_status", {}))
+                           call(4, "wallet_status", {}),
+                           call(5, "buy", {"url": shops.url_for("harbor-audio/sony-wh-1000xm5-black"),
+                                           "item": "XM5", "price": "299.00", "category": "marketing"}))
         listings = json.loads(replies[0]["result"]["content"][0]["text"])["listings"]
         self.assertEqual(len(listings), len(shops.PRODUCTS))
         self.assertEqual(json.loads(replies[1]["result"]["content"][0]["text"])["status"], "blocked")
         self.assertEqual(json.loads(replies[2]["result"]["content"][0]["text"])["status"], "pending")
         status = json.loads(replies[3]["result"]["content"][0]["text"])
         self.assertEqual((status["reserved"], status["remaining"]), ("299.00", "101.00"))
+        self.assertEqual(status["envelopes"][0]["name"], "shopping")
+        wrong = json.loads(replies[4]["result"]["content"][0]["text"])
+        self.assertEqual((wrong["category"], wrong["reasons"][0]), ("marketing", "there is no 'marketing' envelope in this wallet"))
         self.assertFalse(any(r["result"]["isError"] for r in replies))
 
     def test_errors_come_back_as_tool_errors(self):

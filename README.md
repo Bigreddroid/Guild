@@ -131,7 +131,7 @@ Each integration has a labelled fallback. `/healthz` says what is live, simulate
 pip install -r requirements.txt
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000 (opens a demo wallet)
-python3 -m unittest discover -s tests # 221 tests
+python3 -m unittest discover -s tests # 225 tests
 python3 -m guild                      # a deal bounty, narrated in the terminal
 ```
 

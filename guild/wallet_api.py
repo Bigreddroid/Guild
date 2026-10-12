@@ -1,10 +1,11 @@
 """Guild Pay over HTTP: wallets that owners fund and agents spend, within rules.
 
-    POST /api/wallets                               owner creates a wallet (returns an owner key once)
+    POST /api/wallets                               owner creates a wallet (returns an owner key once);
+                                                    optional envelopes {name: {limit, max_per_purchase, approve_above}}
     GET  /api/wallets/{id}                          policy, totals, purchases
     POST /api/wallets/{id}/mandate                  owner: PayPal page to approve the mandate (Vault)
     DELETE /api/wallets/{id}/mandate                owner: revoke it
-    POST /api/wallets/{id}/purchases                agent (Bearer token): ask to buy {url, item, price}
+    POST /api/wallets/{id}/purchases                agent (Bearer token): ask to buy {url, item, price, category?}
     POST /api/wallets/{id}/purchases/{pid}/approve  owner: approve one waiting purchase
     POST /api/wallets/{id}/purchases/{pid}/reject   owner
     POST /api/wallets/{id}/purchases/{pid}/refund   owner
@@ -31,7 +32,8 @@ from fastapi.responses import RedirectResponse
 from guild import shops
 from guild.bounty import Claim, WantError, parse_want, verify
 from guild.sellers import SellerCardError, read_card
-from guild.wallet import APPROVED, Policy, PolicyError, Wallet, WalletError
+from guild.wallet import (APPROVED, DEFAULT_ENVELOPE, MAX_ENVELOPES, Envelope, Policy, PolicyError, Wallet,
+                          WalletError)
 from guild.walletpay import WalletPay
 
 WALLET_LIFETIME_S = 15 * 60
@@ -53,6 +55,23 @@ def _money(raw, name: str) -> Decimal:
     return v.quantize(Decimal("0.01"))
 
 
+def _envelopes(raw) -> Optional[dict]:
+    """{"marketing": {"limit": 150, "max_per_purchase": 60, "approve_above": 40}, ...} -> Envelopes."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not 1 <= len(raw) <= MAX_ENVELOPES:
+        raise HTTPException(400, f"envelopes must be an object with 1 to {MAX_ENVELOPES} entries")
+    out = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            raise HTTPException(400, "each envelope needs limit, max_per_purchase and approve_above")
+        label = str(name)[:24]
+        limit = _money(spec.get("limit"), f"{label} limit")
+        most = _money(spec.get("max_per_purchase", str(limit)), f"{label} max_per_purchase")
+        out[str(name)] = Envelope(limit, most, _money(spec.get("approve_above", str(most)), f"{label} approve_above"))
+    return out
+
+
 class WalletService:
     """Wallets in memory, each with its event run. Pure enough to test without HTTP."""
 
@@ -72,7 +91,8 @@ class WalletService:
             want = parse_want(body, Decimal("0"), shops.DEMO_WANT, "want-" + secrets.token_hex(4))
             policy = Policy(_money(body.get("budget", "400"), "budget"),
                             _money(body.get("max_per_purchase", "350"), "max_per_purchase"),
-                            _money(body.get("approve_above", "250"), "approve_above"), want)
+                            _money(body.get("approve_above", "250"), "approve_above"), want,
+                            _envelopes(body.get("envelopes")))
         except (WantError, PolicyError) as exc:
             raise HTTPException(400, str(exc))
         self.expire()
@@ -125,7 +145,8 @@ class WalletService:
 
     # ------------------------------------------------------------- purchases
 
-    def request(self, wallet_id: str, agent_id: str, url: str, item: str, price) -> dict:
+    def request(self, wallet_id: str, agent_id: str, url: str, item: str, price,
+                category=DEFAULT_ENVELOPE) -> dict:
         """An agent asks to buy. Verified, decided by the rules, and paid if approved."""
         entry = self.get(wallet_id)
         wallet, run = entry["wallet"], entry["run"]
@@ -134,6 +155,8 @@ class WalletService:
         if not isinstance(url, str) or not url.startswith("https://") or len(url) > 500:
             raise HTTPException(400, "url must be an https URL (max 500 chars)")
         price = _money(price, "price")
+        if not isinstance(category, str) or not category or len(category) > 24:
+            raise HTTPException(400, "category must be the name of one of the wallet's envelopes")
         item = " ".join(str(item or "").split())[:160] or "item"
         self.expire()
         want = wallet.policy.want
@@ -146,7 +169,8 @@ class WalletService:
             payee, seller = card.payee(), card.name
         except SellerCardError as exc:
             problem = str(exc)
-        purchase = wallet.decide(url, item, verdict, seller=seller, payee=payee, seller_problem=problem)
+        purchase = wallet.decide(url, item, verdict, seller=seller, payee=payee, seller_problem=problem,
+                                 category=category)
         run.emit({"type": "purchase", "purchase": purchase.public(), "at": claim.at, "page_price": str(verdict.offer.price)
                   if verdict.offer and verdict.offer.price else None, "claimed": f"{price:.2f}", **wallet.totals()})
         if purchase.status == APPROVED:
@@ -264,7 +288,8 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
         if not limiter.allow(f"buy:{card.id}"):
             raise HTTPException(429, "too many purchase requests; slow down")
         body = await read_json(request)
-        return service.request(wallet_id, card.id, body.get("url"), body.get("item"), body.get("price"))
+        return service.request(wallet_id, card.id, body.get("url"), body.get("item"), body.get("price"),
+                               body.get("category") or DEFAULT_ENVELOPE)
 
     @app.post("/api/wallets/{wallet_id}/purchases/{purchase_id}/{action}")
     def owner_action(wallet_id: str, purchase_id: str, action: str, request: Request):

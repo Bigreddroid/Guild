@@ -70,7 +70,7 @@ The same verifier also powers **deal bounties**, an open market where agents rac
 
 - Four realistic agent mistakes blocked, each with a plain-language reason. The real deal is paid to the real seller.
 - Any MCP agent can use the wallet: we drove it with a real MCP client.
-- 221 tests, plus real-browser walkthroughs at desktop and phone width.
+- 225 tests, plus real-browser walkthroughs at desktop and phone width.
 
 ## What we learned
 

@@ -80,6 +80,34 @@ class ScriptedStoryTests(unittest.TestCase):
         self.assertEqual(c.post("/api/wallets", json={"budget": "100", "max_per_purchase": "200"}).status_code, 400)
         self.assertEqual(c.post("/api/wallets", json={"ship_to": "Mars"}).status_code, 400)
         self.assertEqual(c.get("/api/wallets/nope").status_code, 404)
+        for envelopes in ([], {"a": {}}, {"a": {"limit": "x"}}, {"a": {"limit": "300"}, "b": {"limit": "200"}},
+                          {"a": "50"}):
+            self.assertEqual(c.post("/api/wallets", json={"envelopes": envelopes}).status_code, 400, envelopes)
+
+    def test_envelopes_split_the_budget(self):
+        reg = Registry()
+        c = app(shopper=None, registry=reg)
+        bot = c.post("/api/agents", json={"name": "Spender", "payout_email": "dev@example.com"}).json()
+        r = c.post("/api/wallets", json={"agent": bot["agent_id"], "budget": "400", "approve_above": "350",
+                                         "envelopes": {"shopping": {"limit": "320"},
+                                                       "marketing": {"limit": "80", "max_per_purchase": "50",
+                                                                     "approve_above": "20"}}})
+        self.assertEqual(r.status_code, 201, r.text)
+        wid, auth = r.json()["wallet_id"], {"Authorization": f"Bearer {bot['token']}"}
+        view = c.get(f"/api/wallets/{wid}").json()
+        self.assertEqual([(e["name"], e["limit"], e["approve_above"]) for e in view["envelopes"]],
+                         [("shopping", "320.00", "320.00"), ("marketing", "80.00", "20.00")])
+        buy = {"url": HARBOR, "item": "headphones", "price": "299.00"}
+        wrong = c.post(f"/api/wallets/{wid}/purchases", json={**buy, "category": "marketing"}, headers=auth).json()
+        self.assertEqual((wrong["status"], wrong["category"]), ("blocked", "marketing"))
+        self.assertIn("299.00 is over the 50.00 limit per marketing purchase", wrong["reasons"])
+        self.assertEqual(c.post(f"/api/wallets/{wid}/purchases", json={**buy, "category": 7},
+                                headers=auth).status_code, 400)
+        paid = c.post(f"/api/wallets/{wid}/purchases", json={**buy, "category": "shopping"}, headers=auth).json()
+        self.assertEqual(paid["status"], "paid")
+        envs = {e["name"]: e for e in c.get(f"/api/wallets/{wid}").json()["envelopes"]}
+        self.assertEqual((envs["shopping"]["spent"], envs["shopping"]["remaining"], envs["marketing"]["remaining"]),
+                         ("299.00", "21.00", "80.00"))
 
     def test_the_stream_resumes_after_a_reconnect(self):
         c = app()
@@ -105,6 +133,7 @@ class OutsideAgentTests(unittest.TestCase):
                                 headers={"Authorization": f"Bearer {other['token']}"}).status_code, 403)
         ok = c.post(f"/api/wallets/{wid}/purchases", json=buy, headers={"Authorization": f"Bearer {sleuth['token']}"})
         self.assertEqual(ok.json()["status"], "paid")  # under the ask-me amount: approved and paid (preview)
+        self.assertEqual(ok.json()["category"], "shopping")
         bad = c.post(f"/api/wallets/{wid}/purchases", json={**buy, "url": "http://x.example"},
                      headers={"Authorization": f"Bearer {sleuth['token']}"})
         self.assertEqual(bad.status_code, 400)
