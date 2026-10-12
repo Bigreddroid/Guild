@@ -18,6 +18,10 @@ services:
         sync: false
       - key: GUILD_AGENT_OWNERS
         sync: false
+      - key: GUILD_SELLER_ACCOUNTS
+        sync: false
+      - key: GUILD_SHOPPER_LIVE
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: CHANNEL3_API_KEY

@@ -9,23 +9,28 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
 3. `RENDER_EXTERNAL_URL` is set by Render automatically. PayPal returns and the KERNEL browser both use it.
 4. **Keep it warm for judges.** The free tier sleeps after 15 idle minutes, and waking takes about 50 s. In GitHub, go to **Settings → Secrets and variables → Actions → Variables** and add `GUILD_URL` = your Render URL. The `keep-warm` workflow then pings `/healthz` every 10 minutes. A paid Starter instance avoids sleeping entirely.
 
-## 2. PayPal sandbox (funding, capture, payouts)
+## 2. PayPal sandbox (wallets: Vault and pay-the-seller; bounties: hold, capture, payouts)
 
 1. Go to [developer.paypal.com](https://developer.paypal.com) → **Apps & Credentials**, and make sure the toggle is on **Sandbox**.
 2. Create an app (or use the default one). Copy its **Client ID** and **Secret** into Render as `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`.
-3. In the app's features, turn on **Payouts**.
-4. Under **Testing Tools → Sandbox Accounts**, create a **Personal account** per agent owner (agents may share one). Leave out any agent you don't need. Then set:
+3. In the app's features, turn on **Payouts** (for bounties) and **Vault / Save payment methods** (for the wallet's one-time permission), if they're listed.
+4. Under **Testing Tools → Sandbox Accounts**, create a **Business** account for Harbor Audio (the demo seller that gets paid), and set:
+   `GUILD_SELLER_ACCOUNTS=harbor-audio=<that business email>`
+   Other demo shops can be added the same way (`northline`, `metro-tech`, …). Without this, purchases from them have a placeholder payee and fail in sandbox mode.
+5. For bounties, create a **Personal account** per agent owner (agents may share one). Leave out any agent you don't need. Then set:
    `GUILD_AGENT_OWNERS=scout=<email1>,browser=<email2>,quickfind=<email3>,sourcer=<email4>,researcher=<email5>,web_operator=<email6>,doer=<email7>`
-5. Note one sandbox **Personal** account as the **buyer** for judges. Its login goes in the Devpost "test credentials" field, not in this repo.
-6. `/healthz` should now show `"payments": "PayPal sandbox", "funding": true`, and the page shows **Post and fund with PayPal (sandbox)**.
+6. Note one sandbox **Personal** account as the **buyer** (the wallet owner) for judges. Its login goes in the Devpost "test credentials" field, not in this repo.
+7. `/healthz` should now show `"payments": "PayPal sandbox"` and `"wallets": {"payments": "sandbox"}`. The wallet page shows **Connect PayPal (sandbox)**.
+8. **First live test:** open a wallet, connect PayPal, and approve the $299 purchase. If PayPal refuses a vaulted payment to another account, the feed shows PayPal's error name and debug id. Then stop, open a new wallet without connecting PayPal, and approve again: that uses the checkout route, still paid to the seller.
 
 Guild refuses any `PAYPAL_BASE_URL` that isn't `https://api-m.sandbox.paypal.com`, so a live key can't move real money here.
 
-## 3. Claude (QuickFind)
+## 3. Claude (ShopperBot live, and QuickFind)
 
 1. At [console.anthropic.com](https://console.anthropic.com) → **API Keys**, create a key. API usage is billed separately from Claude Pro.
-2. Set it as `ANTHROPIC_API_KEY`. `/healthz` → `hunters.quickfind` changes to `live`, and QuickFind asks Claude (`GUILD_FAST_MODEL`, default `claude-haiku-5-5`) from memory, with no tools. Its claims are checked like everyone else's. Expect some to fail; that's the point.
-3. The same key turns on the earlier prototype's Claude reviewer. To fill in that eval, run locally:
+2. Set it as `ANTHROPIC_API_KEY`. To let ShopperBot shop with Claude instead of the labelled script, also set `GUILD_SHOPPER_LIVE=1` (model: `GUILD_SHOPPER_MODEL`, default `claude-opus-5-5` at low effort, at most 8 turns per wallet). Leave it off for a public demo if you don't want visitors spending API credit.
+3. For bounties: `/healthz` → `hunters.quickfind` changes to `live`, and QuickFind asks Claude (`GUILD_FAST_MODEL`, default `claude-haiku-5-5`) from memory, with no tools. Its claims are checked like everyone else's. Expect some to fail; that's the point.
+4. The same key turns on the earlier prototype's Claude reviewer. To fill in that eval, run locally:
    `ANTHROPIC_API_KEY=... python3 -m scripts.eval_review --json evals/results-claude.json`
 
 ## 4. Channel3 (Scout, and Browser's candidates)

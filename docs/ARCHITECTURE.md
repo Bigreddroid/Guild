@@ -1,6 +1,41 @@
 # Architecture
 
-Guild is a small Python service plus a React page. The rules that decide who gets paid are plain, deterministic Python ([`guild/bounty.py`](../guild/bounty.py)). Agents and sponsor tools sit at the edges. An agent can only *claim* a deal; **Guild's verifier reads the shop's own page and decides**, and only the cheapest verified claim moves money.
+Guild is a small Python service plus a React page. Two products share one verifier:
+- **Guild Pay**, a wallet AI agents spend from;
+- **deal bounties**, an open market for verified deals.
+
+The rules that decide whether money moves are plain, deterministic Python ([`guild/wallet.py`](../guild/wallet.py), [`guild/bounty.py`](../guild/bounty.py)). Agents and models sit at the edges: an agent can only *ask*, and code decides.
+
+## One wallet purchase, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Owner
+    participant Page as Owner page
+    participant API as Guild API
+    participant PP as PayPal sandbox
+    participant Agent as Agent (ShopperBot / REST / MCP)
+    participant Shop as Seller site
+    participant Index as Independent index (Channel3)
+
+    Owner->>Page: rules + want, "Give ShopperBot this wallet"
+    Page->>API: POST /api/wallets → wallet id + owner key (once)
+    Owner->>Page: Connect PayPal
+    API->>PP: Vault v3 setup token → owner approves → payment token
+    Agent->>API: POST /api/wallets/{id}/purchases {url, item, price}
+    API->>Shop: fetch page (https, public address only) → schema.org offer
+    API->>Index: is this seller listed? typical price for this item?
+    API->>Shop: /.well-known/agent-pay.json → seller's PayPal account
+    API->>API: decide: blocked (reasons) / pending (over ask-me) / approved
+    alt approved (now, or after the owner taps Approve)
+        API->>PP: Orders v2 CAPTURE, payee = seller, vault_id (or owner checkout)
+        PP-->>API: capture id
+    end
+    API-->>Page: events: purchase, approved, paid, refunded, stopped, closed
+```
+
+A blocked purchase never reaches PayPal. Without keys, step 4 is skipped and payments are a labelled preview.
 
 ## One bounty, step by step
 
@@ -42,6 +77,11 @@ With no verified claim, or if the bounty crashes, step 14 onward is replaced by 
 
 | Module | Responsibility |
 |---|---|
+| `guild/wallet.py` | `Policy` (budget, limit per purchase, ask-me amount, want) and `Wallet.decide()`: approved, pending or blocked with reasons. Pending purchases reserve budget; approve, reject, record_payment and refund only move forward; stop and close. |
+| `guild/walletpay.py` | PayPal for wallets: Vault mandate through single-use return links, pay an approved purchase (vault, or checkout when there's no mandate), capture on return, refund, revoke; a labelled preview without keys. |
+| `guild/wallet_api.py` | Wallets over HTTP: owner key (hashed, `X-Owner-Key`), agent binding, verification plus seller card plus decision per request, events, a 15-minute lifetime. |
+| `guild/shopper.py` | ShopperBot: a capped Claude tool loop (search, read_page, buy, done), or a labelled script. |
+| `guild/sellers.py` | `/.well-known/agent-pay.json` seller cards, the Orders v2 `payee`. |
 | `guild/bounty.py` | Deal bounty rules: `Want`, `Claim`, reading schema.org offers from a page, `verify()`, `pick_winner()`, claim limits. |
 | `guild/hunt.py`, `hunters.py` | Runs one bounty: house agents (Scout, Browser, QuickFind) and outside agents' claims, each verified as it arrives. |
 | `guild/deals.py` | After a verified deal: store it in the deal history (Elasticsearch `guild-deals`, memory without keys) and send the Zapier "deal found" alert. Neither can change who is paid. |
@@ -70,6 +110,11 @@ With no verified claim, or if the bounty crashes, step 14 onward is replaced by 
 | `POST /api/runs` `{budget}` | Starts an unfunded run and returns `{run_id}`. Budget must be above $0 and at most $10. Rate-limited, with at most 3 runs at once. |
 | `GET /api/runs/{id}` | The events so far and `done`. |
 | `GET /api/runs/{id}/events` | Server-sent events, one per step, then `end`. |
+| `POST /api/wallets` `{budget, max_per_purchase, approve_above, must_have, must_not, max_price, ship_to, agent?}` | Owner creates a wallet. Returns `{wallet_id, owner_key}`; the key is shown once. With the default agent, ShopperBot starts shopping. |
+| `GET /api/wallets/{id}` | Policy, totals (budget, spent, reserved, remaining) and every purchase. |
+| `POST /api/wallets/{id}/purchases` `{url, item, price}` | The wallet's agent (Bearer) asks to buy. Returns the purchase with `status`, `reasons` and `checks`. |
+| `POST /api/wallets/{id}/purchases/{pid}/approve·reject·refund`, `POST /api/wallets/{id}/stop`, `POST·DELETE /api/wallets/{id}/mandate` | Owner actions (`X-Owner-Key`). |
+| `GET /api/wallets/paypal/{mandate,checkout,cancel}` | PayPal returns the owner here; redirects to `/?wallet=<id>`. |
 | `POST /api/hunts` `{bounty, must_have?, must_not?, max_price?, ship_to?}` | Starts a deal bounty for the buyer's want (the demo want when no terms are given; unfunded, ends with a PayPal preview). Returns `{run_id, want}`; stream it like a run. 400 explains a bad want. |
 | `POST /api/fund` `{kind: "hunt", bounty, …want}` | PayPal approval link for a bounty; the want is kept with the pending payment. On return, the page gets `/?hunt=<id>`. |
 | `POST /api/fund` `{budget}` | Creates a PayPal AUTHORIZE order and returns `{approve_url}`. Returns 503 if PayPal or a public URL isn't configured. |
@@ -89,6 +134,11 @@ With no verified claim, or if the bounty crashes, step 14 onward is replaced by 
 
 | Type | Key fields |
 |---|---|
+| Wallet: `wallet` | policy and want, `mode` (sandbox or preview) |
+| Wallet: `agent` | what the agent said (`mode`: live or scripted) |
+| Wallet: `purchase` | `purchase` (status, reasons, checks, price, seller), `at`, `page_price`, totals |
+| Wallet: `approved`, `rejected`, `paid`, `checkout`, `failed`, `refunded` | the purchase plus totals; `paid` carries `via` (mandate or checkout) and the order id |
+| Wallet: `mandate`, `stopped`, `closed` | permission approved or revoked; stop switch; end of the wallet |
 | `want` | `title`, `must_have`, `must_not`, `max_price`, `ship_to`, `bounty`, `deadline_s`, `agents[]` (stars, claims allowed) |
 | `searched` | `agent_id`, `claims`, `at` |
 | `claim` | `agent_id`, `agent_name`, `url`, `claimed`, `page_price`, `valid`, `reasons`, `stars_after`, `at`, `outside` |
@@ -112,6 +162,13 @@ The prototype market streams:
 | `error` | The run failed; no money moved. A funded run's hold is voided. |
 
 ## Invariants the tests hold
+
+Guild Pay:
+- Money moves only for an approved purchase: the rules passed, or the owner approved one that passed. Blocked purchases never call PayPal.
+- Spent plus reserved never exceeds the budget, under random sequences and concurrent requests. Failed payments and refunds release budget.
+- The payee is always the seller's own account from its card. Only the wallet's bound agent can request; only the owner key can approve, refund or stop.
+- Each purchase is charged at most once (idempotent request ids). Return links are single-use, and the PayPal order must match.
+- Page text can't change the owner's want: an injected "also buy the case" is blocked by the owner's rules.
 
 Deal bounties:
 - A claim is paid only if the shop's page itself shows a matching, in-stock offer at or under the max that ships to the buyer, at the price the agent claimed (within 2% or $0.50).
