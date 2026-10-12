@@ -85,7 +85,7 @@ class PayPalClient:
         return self._token
 
     def _call(self, method: str, path: str, payload: Optional[dict] = None, request_id: Optional[str] = None) -> dict:
-        data = None if method == "GET" else json.dumps(payload if payload is not None else {}).encode()
+        data = None if method in ("GET", "DELETE") else json.dumps(payload if payload is not None else {}).encode()
         request_id = request_id or uuid.uuid4().hex
         for attempt in (1, 2):
             headers = {"Authorization": f"Bearer {self._auth()}", "PayPal-Request-Id": request_id}
@@ -146,3 +146,67 @@ class PayPalClient:
 
     def get_payout_batch(self, payout_batch_id: str) -> dict:
         return self._call("GET", f"/v1/payments/payouts/{payout_batch_id}")
+
+    # ------------------------------------------------------------- Guild Pay: vault and pay a seller
+
+    def create_setup_token(self, return_url: str, cancel_url: str, request_id: str,
+                           description: str = "Purchases your AI agent makes within your rules") -> dict:
+        """Vault v3: the owner approves once (a billing agreement) so their agent can pay later."""
+        return self._call("POST", "/v3/vault/setup-tokens", {"payment_source": {"paypal": {
+            "description": description[:127], "usage_type": "MERCHANT", "customer_type": "CONSUMER",
+            "permit_multiple_payment_tokens": False,
+            "experience_context": {"brand_name": "Guild Pay", "shipping_preference": "NO_SHIPPING",
+                                   "return_url": return_url, "cancel_url": cancel_url}}}}, request_id=request_id)
+
+    def create_payment_token(self, setup_token_id: str) -> dict:
+        return self._call("POST", "/v3/vault/payment-tokens",
+                          {"payment_source": {"token": {"id": setup_token_id, "type": "SETUP_TOKEN"}}},
+                          request_id=f"{setup_token_id}-token")
+
+    def delete_payment_token(self, payment_token_id: str) -> dict:
+        return self._call("DELETE", f"/v3/vault/payment-tokens/{payment_token_id}",
+                          request_id=f"{payment_token_id}-delete")
+
+    @staticmethod
+    def _seller_unit(amount: Decimal, currency: str, payee: dict, reference_id: str, description: str) -> dict:
+        return {"reference_id": reference_id[:256], "description": description[:127],
+                "amount": {"currency_code": currency, "value": f"{amount:.2f}"}, "payee": payee}
+
+    def pay_with_vault(self, amount: Decimal, currency: str, payee: dict, vault_id: str, reference_id: str,
+                       description: str) -> dict:
+        """Charge the owner's saved PayPal straight to the seller's account (intent CAPTURE)."""
+        return self._call("POST", "/v2/checkout/orders", {
+            "intent": "CAPTURE",
+            "purchase_units": [self._seller_unit(amount, currency, payee, reference_id, description)],
+            "payment_source": {"paypal": {"vault_id": vault_id}},
+        }, request_id=f"{reference_id}-pay")
+
+    def checkout_for_seller(self, amount: Decimal, currency: str, payee: dict, reference_id: str, description: str,
+                            return_url: str, cancel_url: str) -> dict:
+        """An order the owner approves in PayPal; the money goes to the seller's account."""
+        return self._call("POST", "/v2/checkout/orders", {
+            "intent": "CAPTURE",
+            "purchase_units": [self._seller_unit(amount, currency, payee, reference_id, description)],
+            "payment_source": {"paypal": {"experience_context": {
+                "brand_name": "Guild Pay", "user_action": "PAY_NOW", "shipping_preference": "NO_SHIPPING",
+                "return_url": return_url, "cancel_url": cancel_url}}},
+        }, request_id=f"{reference_id}-checkout")
+
+    def capture_order(self, order_id: str) -> dict:
+        return self._call("POST", f"/v2/checkout/orders/{order_id}/capture", request_id=f"{order_id}-capture")
+
+    def refund_capture(self, capture_id: str, amount: Decimal, currency: str, note: str = "") -> dict:
+        body = {"amount": {"currency_code": currency, "value": f"{amount:.2f}"}}
+        if note:
+            body["note_to_payer"] = note[:255]
+        return self._call("POST", f"/v2/payments/captures/{capture_id}/refund", body,
+                          request_id=f"{capture_id}-refund")
+
+
+def capture_of(order: dict) -> Optional[dict]:
+    """The completed capture in an order response, if the money moved."""
+    try:
+        cap = order["purchase_units"][0]["payments"]["captures"][0]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return cap if cap.get("status") in ("COMPLETED", "PENDING") else None

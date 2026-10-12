@@ -26,7 +26,8 @@ from guild.bounty import Verdict, Want, canonical_url
 WALLET_MAX_BUDGET = Decimal("500.00")   # sandbox demo cap
 CENT = Decimal("0.01")
 
-APPROVED, PENDING, BLOCKED, REJECTED, PAID, FAILED = "approved", "pending", "blocked", "rejected", "paid", "failed"
+APPROVED, PENDING, BLOCKED, REJECTED, PAID, FAILED, REFUNDED = (
+    "approved", "pending", "blocked", "rejected", "paid", "failed", "refunded")
 COMMITTED = (APPROVED, PAID)             # counts as spent
 OPEN = (PENDING,)                        # counts as reserved
 
@@ -71,11 +72,12 @@ class Purchase:
     seller: str = ""
     payee: Optional[dict] = None
     order_id: str = ""
+    capture_id: str = ""
 
     def public(self) -> dict:
         return {"id": self.id, "url": self.url, "item": self.item, "price": f"{self.price:.2f}", "status": self.status,
                 "reasons": list(self.reasons), "checks": dict(self.checks), "seller": self.seller,
-                "order_id": self.order_id}
+                "order_id": self.order_id, "capture_id": self.capture_id}
 
 
 class Wallet:
@@ -83,6 +85,7 @@ class Wallet:
         self.id, self.agent_id, self.policy = wallet_id, agent_id, policy
         self.purchases: list = []
         self.closed = self.stopped = False
+        self.mandate_id = ""        # the owner's vaulted PayPal (payment token), once approved
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
 
@@ -163,7 +166,7 @@ class Wallet:
             p.status, p.reasons = REJECTED, ["rejected by the owner"]
             return p
 
-    def record_payment(self, purchase_id: str, order_id: str = "", error: str = "") -> Purchase:
+    def record_payment(self, purchase_id: str, order_id: str = "", error: str = "", capture_id: str = "") -> Purchase:
         """After PayPal: an approved purchase becomes paid, or failed (money released)."""
         with self._lock:
             p = self._get(purchase_id)
@@ -172,7 +175,15 @@ class Wallet:
             if error:
                 p.status, p.reasons = FAILED, [f"payment failed: {error}"]
             else:
-                p.status, p.order_id = PAID, order_id
+                p.status, p.order_id, p.capture_id = PAID, order_id, capture_id
+            return p
+
+    def record_refund(self, purchase_id: str) -> Purchase:
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.status != PAID:
+                raise WalletError(f"purchase is {p.status}, not paid")
+            p.status, p.reasons = REFUNDED, ["refunded to the owner"]
             return p
 
     def stop(self) -> list:

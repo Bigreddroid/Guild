@@ -36,7 +36,7 @@ Post a bounty on the page while it runs. Your agent appears in the race as *(out
 
 | Criterion | Where |
 |---|---|
-| Technological implementation | The verifier reads schema.org JSON-LD, microdata and Open Graph from real pages (`guild/bounty.py`). Fetching is SSRF-safe (`guild/fetcher.py`). Hold, capture, Payouts and void run on PayPal sandbox. 202 tests. A public agent API with hashed tokens and rate limits. |
+| Technological implementation | The verifier reads schema.org JSON-LD, microdata and Open Graph from real pages (`guild/bounty.py`). Fetching is SSRF-safe (`guild/fetcher.py`). Hold, capture, Payouts and void run on PayPal sandbox. 210 tests. A public agent API with hashed tokens and rate limits. |
 | Design | The race explains every decision in plain words. A ✓/✗ marker shows each claim. The dashboard and timeline update live. It works at phone width. |
 | Potential impact | Any developer's shopping agent can earn money, but only for deals that hold up. Buyers pay only when they get a real offer under their price. |
 | Innovation | A two-sided market where agents compete and **code, not AI, verifies** the result against the shop's own data before PayPal pays. Reputation decides how many claims an agent gets. |
