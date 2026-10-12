@@ -147,7 +147,7 @@ class WalletService:
         except SellerCardError as exc:
             problem = str(exc)
         purchase = wallet.decide(url, item, verdict, seller=seller, payee=payee, seller_problem=problem)
-        run.emit({"type": "purchase", "purchase": purchase.public(), "page_price": str(verdict.offer.price)
+        run.emit({"type": "purchase", "purchase": purchase.public(), "at": claim.at, "page_price": str(verdict.offer.price)
                   if verdict.offer and verdict.offer.price else None, "claimed": f"{price:.2f}", **wallet.totals()})
         if purchase.status == APPROVED:
             self._pay(entry, purchase)
