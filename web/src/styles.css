@@ -111,3 +111,54 @@ button { font: inherit; cursor: pointer; }
   .want-form button { flex: 1; min-height: 44px; }
   .deal { flex-direction: column; align-items: flex-start; gap: 4px; }
 }
+
+/* ---------------------------------------------------------------- Guild Pay */
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
+.tabs button { border: 0; background: #fff; padding: 10px 16px; font-weight: 600; color: var(--muted); min-height: 44px; }
+.tabs button.on { background: var(--accent); color: #fff; }
+.tab-intro { margin: 12px 0 0; color: var(--muted); font-size: 14px; max-width: 980px; }
+.wallet-form { grid-template-columns: 1.2fr 1.4fr .7fr .45fr .65fr .75fr .65fr auto; }
+.wallet-bar .wallet-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wallet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wallet-actions button, .buy-actions button { border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; min-height: 40px; }
+button.paypal { background: #ffc439; color: #111; }
+a.paypal-link { background: #ffc439; color: #111; padding: 9px 14px; border-radius: 8px; font-weight: 600; text-decoration: none; }
+button.stop { background: #fee4e2; color: var(--bad); }
+button.ok { background: var(--good); color: #fff; }
+button.ghost { background: #eef1f6; color: var(--ink); }
+.budget { display: flex; height: 12px; border-radius: 999px; background: #e9edf3; overflow: hidden; margin: 10px 0 6px; }
+.budget .b-spent { background: var(--good); transition: width .4s; }
+.budget .b-wait { background: #e3a008; transition: width .4s; }
+.deal-wait { background: #fffaeb; border-color: #fedf89; }
+.deal-wait .deal-price { color: #b54708; }
+.buy-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.purchases .buys { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.buy { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+.buy-head { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.buy-head .pill { margin-left: auto; }
+.buy-icon { font-weight: 800; width: 16px; }
+.buy-blocked { border-left: 4px solid var(--bad); }
+.buy-pending { border-left: 4px solid #e3a008; background: #fffcf2; }
+.buy-paid, .buy-approved { border-left: 4px solid var(--good); }
+.buy-why { margin: 4px 0; color: var(--ink); }
+.checks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.check { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+.check.ok { background: #ecfdf3; color: var(--good); }
+.check.no { background: #fee4e2; color: var(--bad); font-weight: 600; }
+.pill-pending { background: #fef0c7; color: #93370d; }
+.pill-blocked, .pill-failed { background: #fee4e2; color: var(--bad); }
+.pill-paid, .pill-approved { background: #dcfae6; color: var(--good); }
+.pill-rejected, .pill-refunded { background: #eef1f6; color: var(--muted); }
+.story li.agent { color: #3e4c63; font-style: italic; }
+.story li.wait { color: #b54708; font-weight: 600; }
+.studio-box-wallet { height: 900px; }
+@media (max-width: 1100px) {
+  .wallet-form { grid-template-columns: 1fr 1fr 1fr; }
+}
+@media (max-width: 480px) {
+  .top { flex-direction: column; align-items: stretch; }
+  .tabs { width: 100%; }
+  .tabs button { flex: 1; }
+  .wallet-form { grid-template-columns: 1fr 1fr; }
+  .wallet-form .f-must_have, .wallet-form .f-must_not { grid-column: 1 / -1; }
+}
