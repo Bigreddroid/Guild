@@ -6,6 +6,9 @@
    account (from its agent-pay card): either charged to the vaulted mandate, or, if
    there is no mandate, approved by the owner in PayPal checkout.
 3. Refund: a paid purchase can be refunded to the owner in full.
+4. Hold (promotions): the amount is authorized to the creator's account, from the
+   mandate or approved in checkout, then captured when the proof checks out, or
+   voided at the deadline. Nothing reaches the creator until the capture.
 
 Without PayPal keys every step is a labelled preview: the same decisions, with
 order ids that say PREVIEW and no money moving.
@@ -18,8 +21,8 @@ import time
 import urllib.parse
 from typing import Optional
 
-from guild.paypal import PayPalClient, PayPalError, approve_link, capture_of
-from guild.wallet import APPROVED, PAID, Purchase, Wallet, WalletError
+from guild.paypal import PayPalClient, PayPalError, approve_link, authorization_of, capture_of
+from guild.wallet import APPROVED, HELD, PAID, Purchase, Wallet, WalletError
 
 LINK_TTL_S = 30 * 60
 
@@ -154,6 +157,92 @@ class WalletPay:
             return wallet, {"type": "failed", "purchase": p.public(), "mode": "sandbox"}
         wallet.record_payment(p.id, order_id=entry["paypal_id"], capture_id=cap.get("id", ""))
         return wallet, {"type": "paid", "purchase": p.public(), "mode": "sandbox", "via": "checkout"}
+
+    # ------------------------------------------------------------ holds (pay on proof)
+
+    def hold(self, wallet: Wallet, p: Purchase) -> dict:
+        """Hold an approved promotion's amount for the creator. Returns held, failed or checkout."""
+        if p.kind != "promotion" or p.status != APPROVED:
+            raise WalletError(f"purchase is {p.status}, not an approved promotion")
+        currency = wallet.policy.want.currency
+        description = f"Guild Pay: {p.item} (paid on proof)"
+        if self.mode == "preview":
+            wallet.record_hold(p.id, order_id=f"PREVIEW-{p.id}", authorization_id=f"PREVIEW-AUTH-{p.id}")
+            return {"type": "held", "purchase": p.public(), "mode": "preview"}
+        if wallet.mandate_id:
+            try:
+                order = self.paypal.hold_with_vault(p.price, currency, p.payee, wallet.mandate_id, p.id, description)
+                auth = authorization_of(order)
+                if auth is None:
+                    raise WalletError(f"order {order.get('status', 'not authorized')}")
+            except Exception as exc:
+                wallet.record_hold(p.id, error=_err(exc) if not isinstance(exc, WalletError) else str(exc))
+                return {"type": "failed", "purchase": p.public(), "mode": "sandbox"}
+            wallet.record_hold(p.id, order_id=order.get("id", ""), authorization_id=auth.get("id", ""))
+            return {"type": "held", "purchase": p.public(), "mode": "sandbox", "via": "mandate"}
+        link = self._link(kind="hold", wallet=wallet.id, purchase=p.id, paypal_id="")
+        ok, cancel = self._urls(link, "hold")
+        try:
+            order = self.paypal.checkout_hold_for_seller(p.price, currency, p.payee, p.id, description, ok, cancel)
+        except Exception as exc:
+            wallet.record_hold(p.id, error=_err(exc))
+            return {"type": "failed", "purchase": p.public(), "mode": "sandbox"}
+        with self._lock:
+            self._links[link]["paypal_id"] = order.get("id", "")
+        return {"type": "checkout", "purchase": p.public(), "mode": "sandbox", "approve_url": approve_link(order)}
+
+    def finish_hold(self, link_id: str, token: str, wallets: dict) -> tuple:
+        """The owner approved the hold in PayPal: authorize it."""
+        entry = self._take(link_id, "hold")
+        if token != entry["paypal_id"]:
+            raise WalletError("PayPal order does not match this link")
+        wallet = wallets.get(entry["wallet"])
+        if wallet is None:
+            raise WalletError("wallet not found")
+        p = wallet._get(entry["purchase"])
+        try:
+            auth = authorization_of(self.paypal.authorize_order(entry["paypal_id"]))
+            if auth is None:
+                raise WalletError("PayPal did not authorize the hold")
+        except Exception as exc:
+            wallet.record_hold(p.id, error=_err(exc) if not isinstance(exc, WalletError) else str(exc))
+            return wallet, {"type": "failed", "purchase": p.public(), "mode": "sandbox"}
+        wallet.record_hold(p.id, order_id=entry["paypal_id"], authorization_id=auth.get("id", ""))
+        return wallet, {"type": "held", "purchase": p.public(), "mode": "sandbox", "via": "checkout"}
+
+    def capture(self, wallet: Wallet, p: Purchase, why: str) -> dict:
+        """The proof checked out: capture the hold, so the creator is paid."""
+        if p.status != HELD:
+            raise WalletError(f"purchase is {p.status}, not held")
+        if self.mode == "preview":
+            wallet.record_capture(p.id, f"PREVIEW-CAP-{p.id}", why)
+            return {"type": "paid", "purchase": p.public(), "mode": "preview", "via": "proof"}
+        try:
+            cap = self.paypal.capture(p.authorization_id, p.price, wallet.policy.want.currency)
+            if cap.get("status") not in ("COMPLETED", "PENDING"):
+                raise WalletError(f"capture {cap.get('status')}")
+        except Exception as exc:
+            return {"type": "capture_failed", "purchase": p.public(), "mode": "sandbox",
+                    "error": str(exc) if isinstance(exc, WalletError) else _err(exc)}
+        wallet.record_capture(p.id, cap.get("id", ""), why)
+        return {"type": "paid", "purchase": p.public(), "mode": "sandbox", "via": "proof"}
+
+    def void(self, wallet: Wallet, p: Purchase, why: str) -> dict:
+        """No proof in time (or the owner cancelled): release the hold. Nothing was paid."""
+        if p.status != HELD:
+            raise WalletError(f"purchase is {p.status}, not held")
+        if self.mode == "sandbox":
+            try:
+                self.paypal.void(p.authorization_id)
+            except Exception as exc:
+                try:   # already voided or expired at PayPal: released either way
+                    status = self.paypal.get_authorization(p.authorization_id).get("status")
+                except Exception:  # noqa: BLE001
+                    status = ""
+                if status not in ("VOIDED", "EXPIRED"):
+                    return {"type": "void_failed", "purchase": p.public(), "error": _err(exc)}
+        wallet.record_void(p.id, why)
+        return {"type": "voided", "purchase": p.public(), "mode": self.mode}
 
     def cancel_link(self, link_id: str) -> None:
         with self._lock:

@@ -82,4 +82,25 @@ The owner can split the budget into **envelopes**, e.g. shopping, marketing, too
 | `POST /api/wallets/{id}/purchases` `{url, item, price, category?}` | Bearer (the wallet's agent only) | Returns the purchase with `status`, which is one of the following, plus `reasons` and per-check `checks`:<br>• `paid`: the rules approved it and PayPal paid the seller;<br>• `pending`: waiting for the owner;<br>• `blocked`. |
 | `GET /api/wallets/{id}` | — | Budget, spent, reserved, remaining, the same for each envelope, and every purchase. |
 
+### Marketing that pays on proof
+
+A wallet can also book a creator (a blogger, a newsletter or a channel) and pay them only when their post is really live:
+- Guild holds the amount in PayPal: an authorization paid to the creator's account, taken from the marketing envelope by default.
+- Anyone can then send the post's URL as proof. Guild opens it and checks, in code:
+  - it is on the creator's own channel;
+  - it really links to the owner's page;
+  - it shows a visible ad disclosure;
+  - it names the required words.
+- A good proof captures the hold, and the creator is paid. A bad proof leaves the money held, with the reasons, so the creator can fix the post.
+- No good proof by the deadline means the hold is voided and nothing is paid.
+
+| Method and path | Auth | What it does |
+|---|---|---|
+| `POST /api/wallets/{id}/promotions` `{creator, channel, paypal_email, amount, link, words?, deadline_minutes?, category?}` | `X-Owner-Key`, or Bearer (the wallet's agent) | The owner's bookings are held at once, within every limit. An agent's booking always waits for the owner, because the agent chose who gets paid. |
+| `POST /api/wallets/{id}/promotions/{pid}/proof` `{url}` | — (rate-limited) | Checks the post. Returns `type: "paid"` if it passes; otherwise `valid: false` with the `reasons` and `checks`. |
+| `POST /api/wallets/{id}/purchases/{pid}/cancel` | `X-Owner-Key` | Voids a held promotion. |
+| `GET /api/demo/promotion` | — | A ready-made booking with a labelled demo creator, plus four posts to try: one good, and three that fail for different reasons. |
+
+Deadlines are at most 3 days, because PayPal honours an authorization for 3 days.
+
 Guild pays the seller's own PayPal account, as published in the seller's `/.well-known/agent-pay.json` card, and only when every check holds. If you use MCP, [`examples/mcp_server`](../examples/mcp_server) wraps this as three tools.

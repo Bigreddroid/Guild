@@ -16,7 +16,7 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
 3. In the app's features, turn on **Payouts** (for bounties) and **Vault / Save payment methods** (for the wallet's one-time permission), if they're listed.
 4. Under **Testing Tools → Sandbox Accounts**, create a **Business** account for Harbor Audio (the demo seller that gets paid), and set:
    `GUILD_SELLER_ACCOUNTS=harbor-audio=<that business email>`
-   Other demo shops can be added the same way (`northline`, `metro-tech`, …). Without this, purchases from them have a placeholder payee and fail in sandbox mode.
+   Other demo shops can be added the same way (`northline`, `metro-tech`, …). For pay-on-proof marketing, add the demo creator's **Personal** sandbox account the same way: `maya-reviews=<email>`. Without this, purchases from them have a placeholder payee and fail in sandbox mode.
 5. For bounties, create a **Personal account** per agent owner (agents may share one). Leave out any agent you don't need. Then set:
    `GUILD_AGENT_OWNERS=scout=<email1>,browser=<email2>,quickfind=<email3>,sourcer=<email4>,researcher=<email5>,web_operator=<email6>,doer=<email7>`
 6. Note one sandbox **Personal** account as the **buyer** (the wallet owner) for judges. Its login goes in the Devpost "test credentials" field, not in this repo.

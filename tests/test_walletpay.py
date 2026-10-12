@@ -45,11 +45,35 @@ class FakeSandbox:
         if path == "/v2/checkout/orders":
             oid = f"ORDER{len(self.orders) + 1}"
             self.orders[oid] = data
+            if data["intent"] == "AUTHORIZE":
+                self.holds = getattr(self, "holds", {})
+                if "vault_id" in data["payment_source"]["paypal"]:
+                    self.holds[f"AUTH-{oid}"] = "CREATED"
+                    return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"authorizations": [
+                        {"id": f"AUTH-{oid}", "status": "CREATED"}]}}]}
+                return {"id": oid, "status": "PAYER_ACTION_REQUIRED",
+                        "links": [{"rel": "payer-action", "href": f"https://www.sandbox.paypal.com/checkoutnow?token={oid}"}]}
             if "vault_id" in data["payment_source"]["paypal"]:
                 return {"id": oid, "status": self.vault_status, "purchase_units": [{"payments": {"captures": [
                     {"id": f"CAP-{oid}", "status": "COMPLETED"}]}}] if self.vault_status == "COMPLETED" else []}
             return {"id": oid, "status": "PAYER_ACTION_REQUIRED",
                     "links": [{"rel": "payer-action", "href": f"https://www.sandbox.paypal.com/checkoutnow?token={oid}"}]}
+        if path.endswith("/authorize"):
+            oid = path.split("/")[-2]
+            self.holds = getattr(self, "holds", {})
+            self.holds[f"AUTH-{oid}"] = "CREATED"
+            return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"authorizations": [
+                {"id": f"AUTH-{oid}", "status": "CREATED"}]}}]}
+        if path.startswith("/v2/payments/authorizations/"):
+            auth = path.split("/")[4]
+            if method == "GET":
+                return {"id": auth, "status": self.holds.get(auth, "VOIDED")}
+            if path.endswith("/capture"):
+                self.holds[auth] = "CAPTURED"
+                return {"id": f"CAP-{auth}", "status": "COMPLETED"}
+            if path.endswith("/void"):
+                self.holds[auth] = "VOIDED"
+                return {}
         if path.endswith("/capture"):
             oid = path.split("/")[-2]
             return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"captures": [

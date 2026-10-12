@@ -313,6 +313,12 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         """Deals Guild verified, newest first, with how much buyers saved (Elastic when configured)."""
         return deal_log.recent(min(max(size, 1), 50))
 
+    @app.get("/api/demo/promotion")
+    def demo_promotion():
+        """A ready-made pay-on-proof booking with a labelled demo creator, and four posts
+        to try as proof (one good, three that fail for different reasons)."""
+        return {"demo": True, **shops.demo_brief()}
+
     @app.get("/api/demo/catalogue")
     def demo_catalogue():
         """Guild's labelled demo shops, for outside agents testing without a search API.
@@ -465,8 +471,9 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         return run_id, r
 
     wallet_service = WalletService(hunt_fetch, make_trust, WalletPay(paypal, public_url or ""), new_wallet_run)
-    if shopper is _NOT_SET:
+    if shopper is _NOT_SET:   # the real server (tests pass their own shopper and drive the clock)
         from guild.shopper import start_shopper_from_env as shopper_fn
+        wallet_service.start_sweeper()
     else:
         shopper_fn = shopper
     mount_wallets(app, wallet_service, read_json, client_key, bearer, RateLimiter(limit=30, window_s=60),

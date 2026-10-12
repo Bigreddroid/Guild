@@ -69,10 +69,63 @@ SELLER_NAMES = {"harbor-audio": "Harbor Audio", "northline": "Northline Electron
                 "albion-sound": "Albion Sound", "metro-tech": "Metro Tech"}
 
 
-def seller_accounts() -> dict:
+# Demo creators for pay-on-proof marketing: their channel and posts live on the demo host.
+CREATOR = "maya-reviews"
+CREATOR_NAME = "Maya Reviews"
+CREATOR_CHANNEL = f"{BASE}/creators/{CREATOR}"
+PROMOTED = f"{BASE}/harbor-audio/sony-wh-1000xm5-black"     # the page the owner wants promoted
+POSTS = {
+    # slug: (channel, has link, disclosure visible, mentions Harbor Audio)
+    f"{CREATOR}/harbor-audio-xm5-review": (CREATOR, True, True, True),        # the good post
+    f"{CREATOR}/harbor-audio-xm5-draft": (CREATOR, True, False, True),        # disclosure hidden
+    f"{CREATOR}/sony-xm5-first-look": (CREATOR, False, True, False),          # no link, no mention
+    "copycat-deals/harbor-audio-xm5-review": ("copycat-deals", True, True, True),  # someone else's channel
+}
+
+
+def post_url(slug: str) -> str:
+    return f"{BASE}/creators/{slug}"
+
+
+def _post(slug: str) -> Optional[str]:
+    spec = POSTS.get(slug)
+    if spec is None:
+        return None
+    channel, link, disclosed, mentions = spec
+    who = CREATOR_NAME if channel == CREATOR else "Copycat Deals"
+    shop = "Harbor Audio" if mentions else "a shop I like"
+    tag = ("<p><b>#ad</b> Paid partnership.</p>" if disclosed
+           else "<p style='display:none'>#ad Paid partnership.</p>")
+    return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>{html.escape(who)}</title>"
+            f"<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
+            f"<body style='font-family:system-ui;max-width:640px;margin:24px auto;padding:0 16px'>"
+            f"<p style='background:#222;color:#fff;padding:6px 10px'>Demo creator page for Guild. Not a real blog.</p>"
+            f"<h1>Sony WH-1000XM5: two weeks later</h1><p>By {html.escape(who)}</p>{tag}"
+            f"<p>The noise cancelling is still the best I've used. I got mine from {shop}"
+            + (f": <a href='{PROMOTED}?utm_source={channel}'>see the deal</a>." if link else ".")
+            + "</p></body></html>")
+
+
+def creator_accounts() -> dict:
+    """Same env var as the shops: GUILD_SELLER_ACCOUNTS="maya-reviews=creator@personal.example"."""
+    return {CREATOR: seller_accounts(extra=(CREATOR,))[CREATOR]}
+
+
+def demo_brief() -> dict:
+    """A ready-made promotion for the page's demo button."""
+    return {"creator": CREATOR_NAME, "channel": CREATOR_CHANNEL, "paypal_email": creator_accounts()[CREATOR],
+            "amount": "40.00", "link": PROMOTED, "words": ["Harbor Audio"], "deadline_minutes": 10,
+            "category": "marketing",
+            "proofs": {"good": post_url(f"{CREATOR}/harbor-audio-xm5-review"),
+                       "hidden_ad": post_url(f"{CREATOR}/harbor-audio-xm5-draft"),
+                       "no_link": post_url(f"{CREATOR}/sony-xm5-first-look"),
+                       "copycat": post_url("copycat-deals/harbor-audio-xm5-review")}}
+
+
+def seller_accounts(extra: tuple = ()) -> dict:
     """GUILD_SELLER_ACCOUNTS="harbor-audio=seller@business.example,..." (sandbox business
     accounts); unset shops get a labelled placeholder that only previews."""
-    out = {shop: f"{shop}@sellers.guild.example" for shop in SELLER_NAMES}
+    out = {shop: f"{shop}@sellers.guild.example" for shop in (*SELLER_NAMES, *extra)}
     for pair in os.environ.get("GUILD_SELLER_ACCOUNTS", "").split(","):
         shop, _, email = pair.strip().partition("=")
         if shop in out and "@" in email and " " not in email:
@@ -147,6 +200,9 @@ def serve(url: str) -> Optional[tuple]:
     if host != HOST:
         return None
     shop, _, rest = path.partition("/")
+    if shop == "creators":
+        body = _post(rest)
+        return (200, body) if body else missing
     if "/" + rest == CARD_PATH and shop in SELLER_NAMES:
         return 200, _card(f"{HOST}/{shop}", SELLER_NAMES[shop], seller_accounts()[shop])
     body = page(path)
