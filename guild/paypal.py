@@ -192,6 +192,26 @@ class PayPalClient:
                 "return_url": return_url, "cancel_url": cancel_url}}},
         }, request_id=f"{reference_id}-checkout")
 
+    def hold_with_vault(self, amount: Decimal, currency: str, payee: dict, vault_id: str, reference_id: str,
+                        description: str) -> dict:
+        """Hold (authorize) the owner's saved PayPal for a payee; captured later, or voided."""
+        return self._call("POST", "/v2/checkout/orders", {
+            "intent": "AUTHORIZE",
+            "purchase_units": [self._seller_unit(amount, currency, payee, reference_id, description)],
+            "payment_source": {"paypal": {"vault_id": vault_id}},
+        }, request_id=f"{reference_id}-hold")
+
+    def checkout_hold_for_seller(self, amount: Decimal, currency: str, payee: dict, reference_id: str,
+                                 description: str, return_url: str, cancel_url: str) -> dict:
+        """An authorize-only order the owner approves in PayPal; authorize_order() then holds it."""
+        return self._call("POST", "/v2/checkout/orders", {
+            "intent": "AUTHORIZE",
+            "purchase_units": [self._seller_unit(amount, currency, payee, reference_id, description)],
+            "payment_source": {"paypal": {"experience_context": {
+                "brand_name": "Guild Pay", "user_action": "CONTINUE", "shipping_preference": "NO_SHIPPING",
+                "return_url": return_url, "cancel_url": cancel_url}}},
+        }, request_id=f"{reference_id}-checkout-hold")
+
     def capture_order(self, order_id: str) -> dict:
         return self._call("POST", f"/v2/checkout/orders/{order_id}/capture", request_id=f"{order_id}-capture")
 
@@ -210,3 +230,12 @@ def capture_of(order: dict) -> Optional[dict]:
     except (KeyError, IndexError, TypeError):
         return None
     return cap if cap.get("status") in ("COMPLETED", "PENDING") else None
+
+
+def authorization_of(order: dict) -> Optional[dict]:
+    """The live authorization in an order response, if the money is held."""
+    try:
+        auth = order["purchase_units"][0]["payments"]["authorizations"][0]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return auth if auth.get("status") in ("CREATED", "PENDING") else None

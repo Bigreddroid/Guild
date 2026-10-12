@@ -32,10 +32,10 @@ from guild.bounty import Verdict, Want, canonical_url
 WALLET_MAX_BUDGET = Decimal("500.00")   # sandbox demo cap
 CENT = Decimal("0.01")
 
-APPROVED, PENDING, BLOCKED, REJECTED, PAID, FAILED, REFUNDED = (
-    "approved", "pending", "blocked", "rejected", "paid", "failed", "refunded")
+APPROVED, PENDING, BLOCKED, REJECTED, PAID, FAILED, REFUNDED, HELD, VOIDED = (
+    "approved", "pending", "blocked", "rejected", "paid", "failed", "refunded", "held", "voided")
 COMMITTED = (APPROVED, PAID)             # counts as spent
-OPEN = (PENDING,)                        # counts as reserved
+OPEN = (PENDING, HELD)                   # counts as reserved (held: authorized in PayPal, paid on proof)
 
 
 DEFAULT_ENVELOPE = "shopping"
@@ -121,12 +121,15 @@ class Purchase:
     order_id: str = ""
     capture_id: str = ""
     category: str = DEFAULT_ENVELOPE
+    kind: str = "buy"                # "buy": paid now; "promotion": held, paid on proof
+    authorization_id: str = ""
+    extra: dict = field(default_factory=dict)   # promotion: creator, channel, link, words, deadline, proofs
 
     def public(self) -> dict:
         return {"id": self.id, "url": self.url, "item": self.item, "price": f"{self.price:.2f}",
-                "category": self.category, "status": self.status,
+                "category": self.category, "kind": self.kind, "status": self.status,
                 "reasons": list(self.reasons), "checks": dict(self.checks), "seller": self.seller,
-                "order_id": self.order_id, "capture_id": self.capture_id}
+                "order_id": self.order_id, "capture_id": self.capture_id, **self.extra}
 
 
 class Wallet:
@@ -170,6 +173,33 @@ class Wallet:
 
     # ---------------------------------------------------------------- decisions
 
+    def _limits(self, price: Decimal, category: str) -> tuple:
+        """The rules every spend obeys: open wallet, its envelope, the limits, the money left.
+        Returns (reasons it breaks, the ask-me amount that applies, the category as recorded)."""
+        reasons = []
+        if self.stopped:
+            reasons.append("the owner stopped this wallet")
+        elif self.closed:
+            reasons.append("this wallet is closed")
+        env = self.policy.envelopes.get(category)
+        approve_above = self.policy.approve_above
+        if env is None:
+            reasons.append(f"there is no {category[:24]!r} envelope in this wallet")
+            category = category[:24]
+            if price > self.remaining():
+                reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
+            return reasons, approve_above, category
+        approve_above = min(approve_above, env.approve_above)
+        if price > self.policy.max_per_purchase:
+            reasons.append(f"{price} is over the {self.policy.max_per_purchase} limit per purchase")
+        elif price > env.max_per_purchase:
+            reasons.append(f"{price} is over the {env.max_per_purchase} limit per {category} purchase")
+        if price > self.remaining():
+            reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
+        elif price > self.remaining(category):
+            reasons.append(f"{price} is over the {category} envelope left ({self.remaining(category):.2f})")
+        return reasons, approve_above, category
+
     def decide(self, url: str, item: str, verdict: Verdict, seller: str = "", payee: Optional[dict] = None,
                seller_problem: str = "", category: str = DEFAULT_ENVELOPE) -> Purchase:
         """The agent asks to buy `url` from the `category` envelope; `verdict` is the
@@ -179,27 +209,10 @@ class Wallet:
             price = (verdict.offer.price if verdict.offer and verdict.offer.price else verdict.claim.price)
             price = Decimal(price).quantize(CENT)
             reasons = [] if verdict.valid else list(verdict.reasons)
-            if self.stopped:
-                reasons.insert(0, "the owner stopped this wallet")
-            elif self.closed:
-                reasons.insert(0, "this wallet is closed")
-            env = self.policy.envelopes.get(category)
-            approve_above = self.policy.approve_above
-            if env is None:
-                reasons.append(f"there is no {category[:24]!r} envelope in this wallet")
-                category = category[:24]
-                if price > self.remaining():
-                    reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
-            else:
-                approve_above = min(approve_above, env.approve_above)
-                if price > self.policy.max_per_purchase:
-                    reasons.append(f"{price} is over the {self.policy.max_per_purchase} limit per purchase")
-                elif price > env.max_per_purchase:
-                    reasons.append(f"{price} is over the {env.max_per_purchase} limit per {category} purchase")
-                if price > self.remaining():
-                    reasons.append(f"{price} is over the budget left ({self.remaining():.2f})")
-                elif price > self.remaining(category):
-                    reasons.append(f"{price} is over the {category} envelope left ({self.remaining(category):.2f})")
+            more, approve_above, category = self._limits(price, category)
+            if self.stopped or self.closed:     # say that first
+                reasons.insert(0, more.pop(0))
+            reasons += more
             key = canonical_url(url)
             if any(canonical_url(p.url) == key and p.status in COMMITTED + OPEN for p in self.purchases):
                 reasons.append("this item was already bought or is waiting for approval")
@@ -215,6 +228,58 @@ class Wallet:
                                 payee=payee if status != BLOCKED else None, category=category)
             self.purchases.append(purchase)
             return purchase
+
+    def book(self, item: str, price: Decimal, category: str, payee: dict, url: str, extra: dict,
+             by_owner: bool) -> Purchase:
+        """A promotion: money held for a creator, paid only on proof. The owner's own
+        bookings are approved (they still obey every limit); an agent's always wait
+        for the owner, because the agent chose who gets paid."""
+        with self._lock:
+            price = Decimal(price).quantize(CENT)
+            reasons, _, category = self._limits(price, category)
+            status = BLOCKED if reasons else (APPROVED if by_owner else PENDING)
+            if status == PENDING:
+                reasons = ["an agent booked this promotion: waiting for the owner"]
+            elif status == APPROVED:
+                reasons = ["booked by the owner: holding the money in PayPal"]
+            p = Purchase(id=f"{self.id}-p{next(self._ids)}", url=url[:500], item=item[:160], price=price,
+                         status=status, reasons=reasons, seller=extra.get("creator", ""),
+                         payee=payee if status != BLOCKED else None, category=category, kind="promotion",
+                         extra=dict(extra))
+            self.purchases.append(p)
+            return p
+
+    def record_hold(self, purchase_id: str, order_id: str = "", authorization_id: str = "", error: str = "") -> Purchase:
+        """After PayPal authorizes: an approved promotion is held (still reserved), or failed."""
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.kind != "promotion" or p.status != APPROVED:
+                raise WalletError(f"purchase is {p.status}, not an approved promotion")
+            if error:
+                p.status, p.reasons = FAILED, [f"PayPal hold failed: {error}"]
+            else:
+                p.status, p.order_id, p.authorization_id = HELD, order_id, authorization_id
+                p.reasons = ["held in PayPal: paid to the creator when their post checks out"]
+            return p
+
+    def record_capture(self, purchase_id: str, capture_id: str, why: str) -> Purchase:
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.status != HELD:
+                raise WalletError(f"purchase is {p.status}, not held")
+            p.status, p.capture_id, p.reasons = PAID, capture_id, [why]
+            return p
+
+    def record_void(self, purchase_id: str, why: str) -> Purchase:
+        with self._lock:
+            p = self._get(purchase_id)
+            if p.status != HELD:
+                raise WalletError(f"purchase is {p.status}, not held")
+            p.status, p.reasons = VOIDED, [why]
+            return p
+
+    def held(self) -> list:
+        return [p for p in self.purchases if p.status == HELD]
 
     def _get(self, purchase_id: str) -> Purchase:
         for p in self.purchases:

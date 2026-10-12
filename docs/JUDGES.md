@@ -39,7 +39,7 @@ Ask Claude to buy the headphones. Its `buy` calls come back paid, waiting or blo
 
 | Criterion | Where |
 |---|---|
-| Technological implementation | **PayPal:** Vault v3 permission and Orders v2 with `payee` = seller (`guild/paypal.py`, `guild/walletpay.py`).<br>**Wallet:** rules with reservations, so the budget can't be overspent (`guild/wallet.py`, randomised and concurrent tests).<br>**Verifier:** reads schema.org data from pages, plus independent-listing and price-sanity checks (`guild/bounty.py`).<br>**Safety and access:** SSRF-safe fetching, plus a standard-library MCP server.<br>**Tests:** 225. |
+| Technological implementation | **PayPal:** Vault v3 permission and Orders v2 with `payee` = seller (`guild/paypal.py`, `guild/walletpay.py`).<br>**Wallet:** rules with reservations, so the budget can't be overspent (`guild/wallet.py`, randomised and concurrent tests).<br>**Verifier:** reads schema.org data from pages, plus independent-listing and price-sanity checks (`guild/bounty.py`).<br>**Safety and access:** SSRF-safe fetching, plus a standard-library MCP server.<br>**Tests:** 236. |
 | Design | Every decision is explained in plain words, with a ✓/✗ for each check. One-tap approve, refund and stop. A live dashboard and timeline. It works at phone width. |
 | Potential impact | Agent spending needs more than a budget. Guild Pay stops the losses budgets can't: fake sellers, wrong items, fake prices and injected instructions. And it pays real sellers through normal PayPal. |
 | Innovation | "Verify before pay" for agent wallets. Independent evidence that the seller exists (not just its own page). A seller-published `agent-pay.json` so agents pay the right account. Usable by any agent over MCP. |

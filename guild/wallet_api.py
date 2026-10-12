@@ -10,7 +10,12 @@
     POST /api/wallets/{id}/purchases/{pid}/reject   owner
     POST /api/wallets/{id}/purchases/{pid}/refund   owner
     POST /api/wallets/{id}/stop                     owner: stop switch
-    GET  /api/wallets/paypal/{mandate,checkout,cancel}  PayPal sends the owner back here
+    POST /api/wallets/{id}/promotions               owner (X-Owner-Key) or the wallet's agent (Bearer): book a
+                                                    creator, paid on proof {creator, channel, paypal_email, amount,
+                                                    link, words?, deadline_minutes?, category?}
+    POST /api/wallets/{id}/promotions/{pid}/proof   anyone: {url} of the live post; paid only if it checks out
+    POST /api/wallets/{id}/purchases/{pid}/cancel   owner: release a held promotion
+    GET  /api/wallets/paypal/{mandate,checkout,hold,cancel}  PayPal sends the owner back here
 
 Every step is an event on /api/runs/{wallet_id}/events, so the page can follow along.
 The owner key is shown once and only its hash is kept; it travels in the
@@ -31,13 +36,15 @@ from fastapi.responses import RedirectResponse
 
 from guild import shops
 from guild.bounty import Claim, WantError, parse_want, verify
+from guild.promo import Brief, BriefError, check_proof, parse_brief
 from guild.sellers import SellerCardError, read_card
-from guild.wallet import (APPROVED, DEFAULT_ENVELOPE, MAX_ENVELOPES, Envelope, Policy, PolicyError, Wallet,
+from guild.wallet import (APPROVED, DEFAULT_ENVELOPE, HELD, MAX_ENVELOPES, Envelope, Policy, PolicyError, Wallet,
                           WalletError)
 from guild.walletpay import WalletPay
 
 WALLET_LIFETIME_S = 15 * 60
 MAX_WALLETS = 50
+MAX_PROOFS = 10            # per promotion
 HOUSE_AGENT = "shopperbot"
 
 
@@ -80,6 +87,7 @@ class WalletService:
         self.fetch, self.trust_for, self.pay, self.new_run, self.clock = fetch, trust_for, pay, new_run, clock
         self.entries: dict = {}     # wallet id -> {"wallet", "run", "key", "created"}
         self._lock = threading.Lock()
+        self._money_lock = threading.RLock()   # one capture or void at a time
 
     # ------------------------------------------------------------- lifecycle
 
@@ -110,6 +118,19 @@ class WalletService:
                   "lifetime_s": WALLET_LIFETIME_S})
         return wallet, key, run
 
+    def start_sweeper(self, every_s: float = 5.0) -> threading.Thread:
+        """Release holds whose deadline passed (and close old wallets) even if nobody is looking."""
+        def loop():
+            while True:
+                time.sleep(every_s)
+                try:
+                    self.expire()
+                except Exception:  # noqa: BLE001 - keep sweeping
+                    pass
+        t = threading.Thread(target=loop, name="wallet-sweeper", daemon=True)
+        t.start()
+        return t
+
     def get(self, wallet_id: str) -> dict:
         entry = self.entries.get(wallet_id)
         if entry is None:
@@ -125,13 +146,20 @@ class WalletService:
     def expire(self) -> None:
         now = self.clock()
         for e in list(self.entries.values()):
-            if not e["wallet"].closed and now - e["created"] >= WALLET_LIFETIME_S:
+            if e["wallet"].closed:
+                continue
+            for p in e["wallet"].held():
+                if now - e["created"] >= p.extra.get("deadline_at", 0):
+                    self._void(e, p, "no good proof before the deadline: the hold was released, nothing paid")
+            if now - e["created"] >= WALLET_LIFETIME_S:
                 self.close(e, "the wallet's time ran out")
 
     def close(self, entry: dict, why: str) -> None:
         wallet, run = entry["wallet"], entry["run"]
         if wallet.closed:
             return
+        for p in wallet.held():
+            self._void(entry, p, f"the hold was released: {why}")
         totals = wallet.close()
         run.emit({"type": "closed", "reason": why, **totals})
         run.done = True
@@ -192,7 +220,90 @@ class WalletService:
         except WalletError as exc:
             raise HTTPException(409, str(exc))
         entry["run"].emit({"type": "approved", "purchase": p.public(), **entry["wallet"].totals()})
-        return self._pay(entry, p)
+        return self._hold(entry, p) if p.kind == "promotion" else self._pay(entry, p)
+
+    # ------------------------------------------------------------- promotions (pay on proof)
+
+    def promote(self, wallet_id: str, body: dict, by_owner: bool, agent_id: str = "") -> dict:
+        """Book a creator: the amount is held in PayPal and paid only when their post checks out."""
+        entry = self.get(wallet_id)
+        wallet, run = entry["wallet"], entry["run"]
+        if not by_owner and agent_id != wallet.agent_id:
+            raise HTTPException(403, "this wallet belongs to another agent")
+        try:
+            brief, amount, email, minutes = parse_brief(body)
+        except BriefError as exc:
+            raise HTTPException(400, str(exc))
+        category = body.get("category") or "marketing"
+        if not isinstance(category, str) or len(category) > 24:
+            raise HTTPException(400, "category must be the name of one of the wallet's envelopes")
+        self.expire()
+        now = round(self.clock() - entry["created"], 2)
+        extra = {"creator": brief.creator, "channel": brief.channel, "link": brief.link, "words": list(brief.words),
+                 "disclosure": brief.disclosure, "booked_by": "owner" if by_owner else "agent",
+                 "deadline_at": round(now + minutes * 60, 2), "proofs": []}
+        p = wallet.book(f"Promotion by {brief.creator}", amount, category, {"email_address": email}, brief.channel,
+                        extra, by_owner)
+        run.emit({"type": "promotion", "purchase": p.public(), "at": now, **wallet.totals()})
+        if p.status == APPROVED:
+            self._hold(entry, p)
+        return p.public()
+
+    def _hold(self, entry: dict, p) -> dict:
+        try:
+            event = self.pay.hold(entry["wallet"], p)
+        except WalletError as exc:
+            event = {"type": "failed", "purchase": p.public(), "error": str(exc)}
+        event = {**event, **entry["wallet"].totals()}
+        entry["run"].emit(event)
+        return event
+
+    def proof(self, wallet_id: str, purchase_id: str, url) -> dict:
+        """Someone says the post is live. Check it; capture the hold if it passes."""
+        entry = self.get(wallet_id)
+        wallet, run = entry["wallet"], entry["run"]
+        self.expire()
+        with self._money_lock:
+            try:
+                p = wallet._get(purchase_id)
+            except WalletError as exc:
+                raise HTTPException(404, str(exc))
+            if p.kind != "promotion" or p.status != HELD:
+                raise HTTPException(409, f"this promotion is {p.status}, not waiting for proof")
+            if len(p.extra["proofs"]) >= MAX_PROOFS:
+                raise HTTPException(429, "too many proofs for this promotion")
+            brief = Brief(p.extra["creator"], p.extra["channel"], p.extra["link"], tuple(p.extra["words"]),
+                          p.extra["disclosure"])
+            verdict = check_proof(brief, url, self.fetch)
+            at = round(self.clock() - entry["created"], 2)
+            p.extra["proofs"].append({"url": verdict.url, "valid": verdict.valid, "reasons": verdict.reasons,
+                                      "checks": verdict.checks, "at": at})
+            p.checks = dict(verdict.checks)
+            run.emit({"type": "proof", "purchase": p.public(), "url": verdict.url, "valid": verdict.valid,
+                      "reasons": verdict.reasons, "checks": verdict.checks, "at": at})
+            if not verdict.valid:
+                return {"type": "proof", "valid": False, "reasons": verdict.reasons, "checks": verdict.checks,
+                        "purchase": p.public()}
+            event = {**self.pay.capture(wallet, p, f"proof checked: {verdict.url}"), **wallet.totals()}
+            run.emit(event)
+            return event
+
+    def _void(self, entry: dict, p, why: str) -> dict:
+        with self._money_lock:
+            if p.status != HELD:
+                return {}
+            event = {**self.pay.void(entry["wallet"], p, why), **entry["wallet"].totals()}
+            entry["run"].emit(event)
+            return event
+
+    def cancel(self, entry: dict, purchase_id: str) -> dict:
+        try:
+            p = entry["wallet"]._get(purchase_id)
+        except WalletError as exc:
+            raise HTTPException(404, str(exc))
+        if p.status != HELD:
+            raise HTTPException(409, f"purchase is {p.status}, not held")
+        return self._void(entry, p, "cancelled by the owner: the hold was released, nothing paid")
 
     def reject(self, entry: dict, purchase_id: str) -> dict:
         try:
@@ -251,6 +362,9 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
             elif what == "checkout":
                 wallet, event = service.pay.finish_checkout(link, token, wallets)
                 service.get(wallet.id)["run"].emit({**event, **wallet.totals()})
+            elif what == "hold":
+                wallet, event = service.pay.finish_hold(link, token, wallets)
+                service.get(wallet.id)["run"].emit({**event, **wallet.totals()})
             else:
                 service.pay.cancel_link(link)
                 return RedirectResponse("/?wallet_error=cancelled", status_code=303)
@@ -300,7 +414,27 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
             return service.reject(entry, purchase_id)
         if action == "refund":
             return service.refund(entry, purchase_id)
+        if action == "cancel":
+            return service.cancel(entry, purchase_id)
         raise HTTPException(404, "unknown action")
+
+    @app.post("/api/wallets/{wallet_id}/promotions", status_code=201)
+    async def promote(wallet_id: str, request: Request):
+        if request.headers.get("x-owner-key"):
+            owner(wallet_id, request)
+            by_owner, agent_id = True, ""
+        else:
+            by_owner, agent_id = False, bearer(request).id
+        if not limiter.allow(f"promote:{client_key(request)}"):
+            raise HTTPException(429, "too many promotions; wait a minute")
+        return service.promote(wallet_id, await read_json(request), by_owner, agent_id)
+
+    @app.post("/api/wallets/{wallet_id}/promotions/{purchase_id}/proof")
+    async def proof(wallet_id: str, purchase_id: str, request: Request):
+        if not limiter.allow(f"proof:{client_key(request)}"):
+            raise HTTPException(429, "too many proofs; wait a minute")
+        body = await read_json(request)
+        return service.proof(wallet_id, purchase_id, body.get("url"))
 
     @app.post("/api/wallets/{wallet_id}/stop")
     def stop(wallet_id: str, request: Request):
