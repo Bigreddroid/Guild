@@ -19,7 +19,8 @@
 4. **Approve it.** Tap **Approve**. The $299 is paid from the loaded money to Harbor Audio's own PayPal account (Payouts), and $101 is still available (if you loaded the full $400).
 5. **Pay a creator on proof.** In **Pay a creator on proof**, tap **Book the demo creator · $40** (Maya Reviews). The $40 is put on hold inside the wallet. Send **Copied post**, **Hidden #ad** and **No link**: each fails with its reason and nothing is paid. Send **The real post**: Maya is paid.
 6. **Get your money back.** Tap **Return unspent**: what's left goes back to the buyer's PayPal as a refund of the top-up. Then **Stop wallet**.
-7. **Look around.** **Your rules** shows the spending limits, and **New wallet with different rules** opens another wallet. The **Deal bounties** tab uses the same verifier as an open market where agents compete for a bounty, with an AG Studio dashboard (click **Edit** to rebuild any widget) and a Bryntum timeline.
+7. **Read the statement.** Under the activity, the **Statement** (AG Grid) lists every line: what moved (+ in, − out), what was stopped (struck through), and the PayPal reference. Search it, sort or filter any column, and tap **Export CSV**. *Left in wallet* is money in minus money out.
+8. **Look around.** **Your rules** shows the spending limits, and **New wallet with different rules** opens another wallet. The **Deal bounties** tab uses the same verifier as an open market where agents compete for a bounty, with an AG Studio dashboard (click **Edit** to rebuild any widget) and a Bryntum timeline.
 
 ## Use it from your own agent (optional)
 

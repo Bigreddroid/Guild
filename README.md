@@ -47,6 +47,7 @@ The wallet page shows:
 - **Needs your OK:** purchases waiting for your approval;
 - **Activity:** money in and out, payments, blocked purchases and promotions, with filters; tap a row for its ✓/✗ checks;
 - side cards: **Your AI** (what it said, and how to connect your own over MCP or REST), **Pay a creator on proof**, and **Your rules** (with the spending limits).
+- **Statement** (AG Grid): every line with the money moved (+ in, − out), what was stopped, and the PayPal reference; search, sort, filter, Export CSV, and *left in wallet*.
 
 Without keys, money is labelled **demo money** (preview), and ShopperBot runs a labelled **script**. The wallet's decisions are never scripted.
 
@@ -124,7 +125,7 @@ The cheapest verified claim wins, and PayPal pays the bounty to the winning agen
 | Sponsor | What it does in Guild |
 |---|---|
 | **PayPal** | **Wallet:** Orders v2 `CAPTURE` checkout to load the wallet; Payouts to pay sellers and creators from it; Refunds of the top-up captures to return unspent money. **Bounties:** AUTHORIZE hold, capture, Payouts to the winning developer, void. Sandbox only, enforced by an exact host check. |
-| **AG Grid / AG Studio** | The bounty claims dashboard on the Deal bounties tab. Custom theme, status and star cell renderers, and View/Edit so judges can rebuild it. |
+| **AG Grid / AG Studio** | **Wallet:** the Statement, an AG Grid (Community) table of every line of money in, money out and what was stopped, with search, sorting, column filters and CSV export, themed to match the page. **Bounties:** the AG Studio claims dashboard with a custom theme, status and star cell renderers, and View/Edit so judges can rebuild it. |
 | **Bryntum** | The bounty timeline: each claim as a marker at the second it arrived, coloured by result. |
 | **Channel3** | The independent index behind "seller listed" and "plausible price", and ShopperBot's and the bounty agents' product search. |
 | **KERNEL** | Reads pages in a cloud browser for the Browser bounty agent. |
@@ -193,7 +194,7 @@ guild/
   market.py  run.py  agents.py  brain.py  ...  the earliest prototype (see below)
 examples/mcp_server/      Guild Pay as an MCP server (stdlib)
 examples/agent_starter/   a bounty-hunting agent (stdlib)
-web/src/         React: wallet page; bounties page with the AG Studio dashboard and Bryntum timeline
+web/src/         React: wallet page (with the AG Grid statement); bounties page with the AG Studio dashboard and Bryntum timeline
 tests/           236 unit and integration tests
 docs/            agent guide, architecture, setup, judges' guide, Devpost text, video script
 ```
@@ -215,7 +216,7 @@ Guild started as a job market where agents bid and an AI reviewer decided pay (`
 - **AI:** Claude via the Anthropic API (ShopperBot, QuickFind). Built with **Claude Code**.
 - **Payments:** PayPal Orders v2 (capture, authorize, void), Refunds and Payouts v1, sandbox only.
 - **Tools:** Channel3, KERNEL, Elasticsearch and Zapier, plus MCP.
-- **UI:** React + Vite; AG Studio (AG Grid + AG Charts) and Bryntum Gantt on the bounties tab.
+- **UI:** React + Vite; an AG Grid statement on the wallet page; AG Studio (AG Grid + AG Charts) and Bryntum Gantt on the bounties tab.
 - **Backend:** Python, FastAPI and server-sent events. **Hosting:** Render.
 
 ## Licence

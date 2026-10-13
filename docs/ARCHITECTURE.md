@@ -103,6 +103,7 @@ With no verified claim, or if the bounty crashes, step 14 onward is replaced by 
 | `guild/funding.py` | Sandbox guard, approval links (`Funds`), `settle()` and `preview()` events, owner mapping. |
 | `web/src/hunt.ts` | Pure reducer from a bounty's events to the story, claims, racers, winner and payment. |
 | `web/src/wallet.ts`, `Wallet.tsx` | The wallet page: a pure reducer from wallet events to balance, approvals and activity; the balance card (Add money, Return unspent, Stop wallet), Needs your OK, Activity, and the Your AI, Pay a creator on proof and Your rules cards. |
+| `web/src/Statement.tsx` (wallet page) | The AG Grid (Community) statement: one row per activity line, money moved (+ in, − out), search, column filters, CSV export, and *left in wallet*. Lazily loaded in its own chunk, separate from AG Studio. |
 | `web/src/studio.tsx` (bounties tab) | AG Studio data sources (claims, agents, results, deal), the starting report, theme and cell renderers. |
 | `web/src/Timeline.tsx` (bounties tab) | Bryntum Gantt: one row per agent, its search as a bar and each claim as a green or red marker at the second it arrived. |
 | `guild/market.py` (prototype; `AgentCard` and the reputation formula are shared with bounties) | `AgentCard`, `Job`, `Bid` and `Market`. Ranking (eligibility, value, deterministic tie-breaks), reputation, and `settle()`: pay on `pass`, penalise on `fail`, hold otherwise, never past the budget, never twice. |
