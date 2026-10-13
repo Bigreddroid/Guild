@@ -59,7 +59,7 @@ The same verifier also powers **deal bounties**, an open market where agents rac
   - ShopperBot is a capped Claude tool loop (`search`, `read_page`, `buy`, `done`) with the refusal fallback, and a labelled scripted mode for the public demo;
   - a standard-library MCP server;
   - REST with hashed tokens; only the wallet's own agent can spend.
-- **UI:** React + Vite. A clean wallet page: a balance card, a "Needs your OK" card, one Activity list with tap-to-expand ✓/✗ checks, and cards for your AI, pay-on-proof marketing and your rules. Under it, an AG Grid statement of every line (search, sort, filters, CSV export). The bounties tab has an AG Studio dashboard with a custom theme and cell renderers, and a Bryntum timeline. Server-sent events that resume after a reconnect.
+- **UI:** React + Vite. A clean wallet page: a balance card, a "Needs your OK" card, one Activity list with tap-to-expand ✓/✗ checks, and cards for your AI, pay-on-proof marketing and your rules. A budget card: what to watch and one-tap limit changes, with a summary Claude writes from the numbers only (never page text). Under it, an AG Grid statement of every line (search, sort, filters, CSV export). The bounties tab has an AG Studio dashboard with a custom theme and cell renderers, and a Bryntum timeline. Server-sent events that resume after a reconnect.
 - **Hosting:** Render. **Built with Claude Code.**
 
 ## Challenges we ran into
@@ -75,7 +75,7 @@ The same verifier also powers **deal bounties**, an open market where agents rac
 - A creator is paid only for a post that is really live and really disclosed.
 - Unspent money always goes back to the owner.
 - Any MCP agent can use the wallet: we drove it with a real MCP client.
-- 242 tests.
+- 252 tests.
 
 ## What we learned
 
@@ -86,7 +86,7 @@ The question for agent payments isn't only "how much"; it's "is this real?" When
 - Run on live keys with real merchants publishing `agent-pay.json`.
 - Re-check the page at the moment of payment.
 - Partner (multiparty) onboarding for sellers through PayPal Commerce Platform.
-- Spending reports per agent.
+- Spending reports per agent, and matching the wallet's ledger to PayPal Transaction Search once live.
 
 ## Built with
 

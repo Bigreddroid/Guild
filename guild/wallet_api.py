@@ -8,6 +8,9 @@
     POST /api/wallets/{id}/purchases                agent (Bearer token): ask to buy {url, item, price, category?}
     POST /api/wallets/{id}/purchases/{pid}/approve  owner: approve one waiting purchase
     POST /api/wallets/{id}/purchases/{pid}/reject   owner
+    GET  /api/wallets/{id}/insights                 owner: numbers, pace, what to watch, proposed limit changes,
+                                                    and a short summary (Claude with a key, else a template)
+    POST /api/wallets/{id}/limits                   owner: {limits: {name: amount}} change spending limits at once
     POST /api/wallets/{id}/stop                     owner: freeze; waiting purchases dropped, unspent money returned
     POST /api/wallets/{id}/promotions               owner (X-Owner-Key) or the wallet's agent (Bearer): book a
                                                     creator, paid on proof {creator, channel, paypal_email, amount,
@@ -34,6 +37,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from guild import shops
+from guild import budget
 from guild.bounty import Claim, WantError, parse_want, verify
 from guild.promo import Brief, BriefError, check_proof, parse_brief
 from guild.sellers import SellerCardError, read_card
@@ -88,6 +92,8 @@ class WalletService:
         self._lock = threading.Lock()
         self._money_lock = threading.RLock()   # one capture, void or withdrawal at a time
         self.house_agent: Optional[Callable] = None   # starts ShopperBot once the wallet has money
+        self.budget_client = None                      # Anthropic client for the summary (None: template)
+        self._summaries: dict = {}                     # wallet id -> (ledger fingerprint, summary)
 
     # ------------------------------------------------------------- lifecycle
 
@@ -357,6 +363,33 @@ class WalletService:
             raise HTTPException(409, "nothing to return: the rest is spent or waiting")
         return self._withdraw(entry)
 
+    # ------------------------------------------------------------- the budget
+
+    def insights(self, entry: dict) -> dict:
+        wallet = entry["wallet"]
+        analysis = budget.analyze(wallet, self.clock() - entry["created"])
+        # The summary only changes when the ledger does, so Claude isn't asked on every refresh.
+        print_ = (str(wallet.funded), str(wallet.withdrawn), tuple((p.id, p.status) for p in wallet.purchases),
+                  tuple(sorted((k, str(e.limit)) for k, e in wallet.policy.envelopes.items())))
+        cached = self._summaries.get(wallet.id)
+        if cached and cached[0] == print_:
+            summary = cached[1]
+        else:
+            summary = budget.summarize(analysis, self.budget_client)
+            self._summaries[wallet.id] = (print_, summary)
+        return {**analysis, "summary": summary}
+
+    def set_limits(self, entry: dict, limits) -> dict:
+        if not isinstance(limits, dict) or not 1 <= len(limits) <= MAX_ENVELOPES:
+            raise HTTPException(400, "limits must be an object like {\"marketing\": \"100\"}")
+        try:
+            totals = entry["wallet"].set_limits({str(k): _money(v, f"{k} limit") for k, v in limits.items()})
+        except WalletError as exc:
+            raise HTTPException(409, str(exc))
+        event = {"type": "limits", "changed": {k: f"{_money(v, k):.2f}" for k, v in limits.items()}, **totals}
+        entry["run"].emit(event)
+        return event
+
     def stop(self, entry: dict) -> dict:
         dropped = entry["wallet"].stop()
         event = {"type": "stopped", "dropped": [p.id for p in dropped], **entry["wallet"].totals()}
@@ -453,6 +486,15 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
             raise HTTPException(429, "too many proofs; wait a minute")
         body = await read_json(request)
         return service.proof(wallet_id, purchase_id, body.get("url"))
+
+    @app.get("/api/wallets/{wallet_id}/insights")
+    def insights(wallet_id: str, request: Request):
+        return service.insights(owner(wallet_id, request))
+
+    @app.post("/api/wallets/{wallet_id}/limits")
+    async def set_limits(wallet_id: str, request: Request):
+        entry = owner(wallet_id, request)
+        return service.set_limits(entry, (await read_json(request)).get("limits"))
 
     @app.post("/api/wallets/{wallet_id}/stop")
     def stop(wallet_id: str, request: Request):

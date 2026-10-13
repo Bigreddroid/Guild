@@ -83,6 +83,8 @@ The owner can split the budget into **envelopes**, e.g. shopping, marketing, too
 | `GET /api/wallets/{id}` | — | What it holds (`funded`, `balance`), spent, reserved, `remaining` (what your agent can still spend), the same for each envelope, and every purchase. |
 | `POST /api/wallets/{id}/top-up` `{amount}` | `X-Owner-Key` | The owner loads money. Preview: credited at once (`type: "topped_up"`). Sandbox: returns an `approve_url` for PayPal checkout; the wallet is credited when the owner comes back. |
 | `POST /api/wallets/{id}/withdraw` | `X-Owner-Key` | Returns every unspent, unreserved dollar to the owner's PayPal (refunds of their top-ups). Stopping or closing a wallet does this too. |
+| `GET /api/wallets/{id}/insights` | `X-Owner-Key` | The budget: `numbers` (loaded, spent, available, by limit, what was stopped), `pace` (forecast only after 10 minutes and 2 payments), `watch` (limits nearly used up, repeated blocked attempts, an unusually large payment, a creator booking about to expire), `proposals` (limit changes, each with the exact `limits` to apply), and a `summary` written by Claude when the server has a key, otherwise by a template. |
+| `POST /api/wallets/{id}/limits` `{limits: {name: amount}}` | `X-Owner-Key` | Changes spending limits all at once. A limit can't go below what it already used, and the limits can't add up to more than the wallet holds. |
 
 Wallets are prepaid: each starts empty, and your agent can only spend what the owner loaded. A purchase over what's left is blocked with the amount left in its reason.
 

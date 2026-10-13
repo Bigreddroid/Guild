@@ -18,9 +18,10 @@
    The page reads "Guild stopped $515.00 of bad spending before any money moved."
 4. **Approve it.** Tap **Approve**. The $299 is paid from the loaded money to Harbor Audio's own PayPal account (Payouts), and $101 is still available (if you loaded the full $400).
 5. **Pay a creator on proof.** In **Pay a creator on proof**, tap **Book the demo creator · $40** (Maya Reviews). The $40 is put on hold inside the wallet. Send **Copied post**, **Hidden #ad** and **No link**: each fails with its reason and nothing is paid. Send **The real post**: Maya is paid.
-6. **Get your money back.** Tap **Return unspent**: what's left goes back to the buyer's PayPal as a refund of the top-up. Then **Stop wallet**.
-7. **Read the statement.** Under the activity, the **Statement** (AG Grid) lists every line: what moved (+ in, − out), what was stopped (struck through), and the PayPal reference. Search it, sort or filter any column, and tap **Export CSV**. *Left in wallet* is money in minus money out.
-8. **Look around.** **Your rules** shows the spending limits, and **New wallet with different rules** opens another wallet. The **Deal bounties** tab uses the same verifier as an open market where agents compete for a bounty, with an AG Studio dashboard (click **Edit** to rebuild any widget) and a Bryntum timeline.
+6. **Read your budget.** The **Your budget** card sums up where the money went, flags what to watch (here: the shopping limit nearly used up, and 4 blocked attempts) and proposes moving unused marketing room to shopping. Tap **Apply** and the limits under **Your rules** change.
+7. **Get your money back.** Tap **Return unspent**: what's left goes back to the buyer's PayPal as a refund of the top-up. Then **Stop wallet**.
+8. **Read the statement.** Under the activity, the **Statement** (AG Grid) lists every line: what moved (+ in, − out), what was stopped (struck through), and the PayPal reference. Search it, sort or filter any column, and tap **Export CSV**. *Left in wallet* is money in minus money out.
+9. **Look around.** **Your rules** shows the spending limits, and **New wallet with different rules** opens another wallet. The **Deal bounties** tab uses the same verifier as an open market where agents compete for a bounty, with an AG Studio dashboard (click **Edit** to rebuild any widget) and a Bryntum timeline.
 
 ## Use it from your own agent (optional)
 
@@ -38,7 +39,7 @@ Ask Claude to buy the headphones. Its `buy` calls come back paid, waiting or blo
 
 | Criterion | Where |
 |---|---|
-| Technological implementation | **PayPal:** Orders v2 checkout to load the wallet, Payouts to the seller's own account, Refunds to return unspent money (`guild/paypal.py`, `guild/walletpay.py`).<br>**Wallet:** prepaid, with envelopes and reservations, so nothing can be overspent (`guild/wallet.py`, randomised and concurrent tests).<br>**Verifier:** reads schema.org data from pages, plus independent-listing and price-sanity checks (`guild/bounty.py`); pay-on-proof post checks (`guild/promo.py`).<br>**Safety and access:** SSRF-safe fetching, plus a standard-library MCP server.<br>**Tests:** 242. |
+| Technological implementation | **PayPal:** Orders v2 checkout to load the wallet, Payouts to the seller's own account, Refunds to return unspent money (`guild/paypal.py`, `guild/walletpay.py`).<br>**Wallet:** prepaid, with envelopes and reservations, so nothing can be overspent (`guild/wallet.py`, randomised and concurrent tests).<br>**Verifier:** reads schema.org data from pages, plus independent-listing and price-sanity checks (`guild/bounty.py`); pay-on-proof post checks (`guild/promo.py`).<br>**Safety and access:** SSRF-safe fetching, plus a standard-library MCP server.<br>**Tests:** 252. |
 | Design | A clean wallet page: one balance card, one "Needs your OK" card, one Activity list. Every decision is explained in plain words, with a ✓/✗ for each check. One-tap approve, Return unspent and Stop. It works at phone width. |
 | Potential impact | Agent spending needs more than a budget. Guild Pay stops the losses budgets can't: fake sellers, wrong items, fake prices and injected instructions. It never keeps a card on file, and it pays real sellers through normal PayPal. |
 | Innovation | "Verify before pay" for a prepaid agent wallet. Independent evidence that the seller exists (not just its own page). A seller-published `agent-pay.json` so agents pay the right account. Marketing paid only on a checked proof. Usable by any agent over MCP. |

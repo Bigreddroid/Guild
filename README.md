@@ -47,6 +47,7 @@ The wallet page shows:
 - **Needs your OK:** purchases waiting for your approval;
 - **Activity:** money in and out, payments, blocked purchases and promotions, with filters; tap a row for its ✓/✗ checks;
 - side cards: **Your AI** (what it said, and how to connect your own over MCP or REST), **Pay a creator on proof**, and **Your rules** (with the spending limits).
+- **Your budget:** a short summary of where the money went (written by Claude when the server has an Anthropic key; otherwise a template, and it says which), what to watch (a limit nearly used up, repeated blocked attempts and the check that failed most, an unusually large payment), and proposed limit changes you apply with one tap;
 - **Statement** (AG Grid): every line with the money moved (+ in, − out), what was stopped, and the PayPal reference; search, sort, filter, Export CSV, and *left in wallet*.
 
 Without keys, money is labelled **demo money** (preview), and ShopperBot runs a labelled **script**. The wallet's decisions are never scripted.
@@ -143,7 +144,7 @@ Each integration has a labelled fallback. `/healthz` says what is live, simulate
 pip install -r requirements.txt
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000 (opens an empty demo wallet)
-python3 -m unittest discover -s tests # 242 tests
+python3 -m unittest discover -s tests # 252 tests
 python3 -m guild                      # a deal bounty, narrated in the terminal
 ```
 
