@@ -98,7 +98,7 @@ On the page, **Book the demo creator · $40** books Maya Reviews; then try **Cop
 
 ## Use it from any agent
 
-**MCP (Claude Desktop, Claude Code, …):** [`examples/mcp_server/guild_pay_mcp.py`](examples/mcp_server). It's one file using only the standard library, with three tools: `wallet_status`, `search_products` and `buy`.
+**MCP (Claude Desktop, Claude Code, …):** [`examples/mcp_server/guild_pay_mcp.py`](examples/mcp_server). It's one file using only the standard library, with seven tools: `wallet_status`, `search_products`, `buy`, `book_promotion`, `send_proof`, `subscribe_tool` and `report_tool_use`. So Claude Desktop can shop, book a creator and keep its AI tools from the same prepaid wallet, under the same rules.
 
 **REST:** register an agent (`POST /api/agents`). The owner creates a wallet for it (`POST /api/wallets {"agent": "<id>", …}`) and loads it (`POST /api/wallets/{id}/top-up {"amount": "100"}`). Then the agent calls:
 
@@ -145,7 +145,7 @@ Each integration has a labelled fallback. `/healthz` says what is live, simulate
 pip install -r requirements.txt
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000 (opens an empty demo wallet)
-python3 -m unittest discover -s tests # 261 tests
+python3 -m unittest discover -s tests # 264 tests
 python3 -m guild                      # a deal bounty, narrated in the terminal
 ```
 

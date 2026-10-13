@@ -112,4 +112,4 @@ A wallet can also book a creator (a blogger, a newsletter or a channel) and pay 
 
 Deadlines are between 1 minute and 3 days.
 
-Guild pays the seller's own PayPal account (Payouts, from the loaded money), as published in the seller's `/.well-known/agent-pay.json` card, and only when every check holds. If you use MCP, [`examples/mcp_server`](../examples/mcp_server) wraps this as three tools.
+Guild pays the seller's own PayPal account (Payouts, from the loaded money), as published in the seller's `/.well-known/agent-pay.json` card, and only when every check holds. If you use MCP, [`examples/mcp_server`](../examples/mcp_server) wraps this as seven tools: shopping, creator promotions (book and send proof) and AI-tool subscriptions (subscribe and report use).
