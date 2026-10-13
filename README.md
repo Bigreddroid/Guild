@@ -143,7 +143,7 @@ Each integration has a labelled fallback. `/healthz` says what is live, simulate
 pip install -r requirements.txt
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000 (opens an empty demo wallet)
-python3 -m unittest discover -s tests # 236 tests
+python3 -m unittest discover -s tests # 242 tests
 python3 -m guild                      # a deal bounty, narrated in the terminal
 ```
 
@@ -204,7 +204,7 @@ docs/            agent guide, architecture, setup, judges' guide, Devpost text, 
 | Part | State |
 |---|---|
 | Verifier and trust checks, wallet rules, envelopes, pay-on-proof checks, owner page, REST, MCP, ShopperBot | Done. Tested, including 200 random purchase sequences and concurrent requests. |
-| PayPal: top-up checkout, Payouts to sellers and creators, return unspent by refund | Built. Tested against a fake PayPal sandbox; the live sandbox run is pending keys. **Open question:** Payouts must be enabled on the sandbox app, and the demo shop and creator must be real sandbox accounts set in `GUILD_SELLER_ACCOUNTS` (e.g. `harbor-audio=...`, `maya-reviews=...`). Until then, a payout fails with PayPal's error name and the money is released back to the wallet. |
+| PayPal: top-up checkout, Payouts to sellers and creators, return unspent by refund | Built. Tested against a fake PayPal sandbox; the live sandbox run is pending keys. `/api/readiness` lists what a server still needs, and `python3 -m scripts.live_check --url <server>` runs the whole story live and writes `evidence/live-run.json`. **Open question:** Payouts must be enabled on the sandbox app, and the demo shop and creator must be real sandbox accounts set in `GUILD_SELLER_ACCOUNTS` (e.g. `harbor-audio=...`, `maya-reviews=...`). Until then, a payout fails with PayPal's error name and the money is released back to the wallet. |
 | Live Channel3 / KERNEL / Claude | Built and tested with mocks; live once keys are set. |
 
 ## Earlier prototypes

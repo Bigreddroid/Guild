@@ -75,7 +75,7 @@ The same verifier also powers **deal bounties**, an open market where agents rac
 - A creator is paid only for a post that is really live and really disclosed.
 - Unspent money always goes back to the owner.
 - Any MCP agent can use the wallet: we drove it with a real MCP client.
-- 236 tests.
+- 242 tests.
 
 ## What we learned
 

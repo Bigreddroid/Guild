@@ -2,6 +2,23 @@
 
 Everything runs without keys, with labelled simulated agents and a PayPal preview. Add keys one at a time in **Render → your service → Environment**. Never commit a key or paste one into an issue or chat. After each change, open `/healthz` to confirm the part shows as live.
 
+## Go live in 10 minutes (the short version)
+
+1. **Render:** New → Blueprint → this repository. Wait for the first deploy.
+2. **PayPal sandbox app** ([developer.paypal.com](https://developer.paypal.com) → Apps & Credentials, toggle on **Sandbox**): copy the Client ID and Secret, and turn on **Payouts** in the app's features.
+3. **Sandbox accounts** (Testing Tools → Sandbox Accounts): one **Business** account for the demo seller, one **Personal** account for the demo creator, and one **Personal** account as the buyer (its login goes in Devpost's test-credentials field, never in this repo).
+4. **Render → your service → Environment:** set
+   - `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`
+   - `GUILD_SELLER_ACCOUNTS=harbor-audio=<business email>,maya-reviews=<creator email>`
+5. **Check:** open `https://<your service>/api/readiness`. Every required item should say `"ok": true` (Payouts shows `null`: it can only be confirmed by the first payout). Anything missing comes with the exact fix.
+6. **Run the live check** from any machine with Python 3:
+   ```bash
+   python3 -m scripts.live_check --url https://<your service>.onrender.com
+   ```
+   It opens a wallet, prints a PayPal link (pay $400 as the sandbox buyer), then checks on its own: ShopperBot's four bad purchases are blocked, the $299 one is paid out to the seller, the creator is paid on proof, and the unspent $61 is refunded. It writes `evidence/live-run.json` (ids and statuses; no keys, emails masked) and exits non-zero at the first failure, with PayPal's error name.
+
+The sections below explain each part in more detail.
+
 ## 1. Deploy on Render
 
 1. In Render, choose **New → Blueprint** and pick this repository. It reads `render.yaml`.
@@ -21,7 +38,7 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
    `GUILD_AGENT_OWNERS=scout=<email1>,browser=<email2>,quickfind=<email3>,sourcer=<email4>,researcher=<email5>,web_operator=<email6>,doer=<email7>`
 6. Note one sandbox **Personal** account as the **buyer** (the wallet owner) for judges. Its login goes in the Devpost "test credentials" field, not in this repo.
 7. `/healthz` should now show `"payments": "PayPal sandbox"` and `"wallets": {"payments": "sandbox"}`. A new wallet starts empty, and the balance card offers **Pay with PayPal**.
-8. **First live test:**
+8. **First live test** (or run `scripts/live_check.py`, above, which does the same and records the evidence):
    1. Open the page, pick $400 and tap **Pay with PayPal**. Log in as the buyer and pay. Back on the page, the balance shows $400 and ShopperBot starts.
    2. Approve the $299 purchase. The activity row shows the payout batch id; check that Harbor Audio's sandbox account received $299.
    3. Book the demo creator ($40) and send **The real post**. Check that Maya Reviews' sandbox account received $40.

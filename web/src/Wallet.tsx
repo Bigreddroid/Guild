@@ -163,6 +163,10 @@ function BalanceCard({ v, owner, onTopUp, onWithdraw, onStop, busy }: {
             {v.mode === 'sandbox' ? 'Pay with PayPal' : 'Add demo money'}
           </button>
           <p className="gp-hint">The wallet holds up to {money(t.budget)}; you can add {money(room)}. Your AI can never spend more than what's loaded.</p>
+          {v.mode === 'preview' && (
+            <p className="gp-hint">Demo money: this server has no PayPal sandbox keys yet, so nothing real moves.{' '}
+              <a href="/api/readiness" target="_blank" rel="noopener noreferrer">What it needs to go live</a></p>
+          )}
         </form>
       )}
       {v.closed && <p className="gp-closed">This wallet is closed. Anything unspent went back to you.</p>}
