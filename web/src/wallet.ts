@@ -15,6 +15,10 @@ export interface Totals {
   budget: number; funded: number; balance: number; withdrawn: number; spent: number; reserved: number; remaining: number;
   envelopes: Envelope[];
 }
+export interface Renewal {
+  id: string; tool: string; url: string; price: number; every_minutes: number; category: string; booked_by: string;
+  status: string; reason: string; charges: number; next_in_s: number | null; last_used_s_ago: number | null; unused: boolean;
+}
 export type Tone = 'in' | 'out' | 'blocked' | 'waiting' | 'held' | 'info';
 export interface Activity {
   key: string; tone: Tone; title: string; detail: string; amount: number | null; status: string; purchase?: Purchase;
@@ -24,6 +28,7 @@ export interface WalletView {
   id: string; agent: string; mode: string; want: string; mustHave: string[]; mustNot: string[];
   maxPerPurchase: number; approveAbove: number; totals: Totals; purchases: Purchase[];
   activity: Activity[]; notes: string[]; agentMode: string; closed: boolean; stopped: boolean; error: string;
+  renewals: Renewal[];
 }
 
 export const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -47,7 +52,7 @@ export const agentName = (id: string) => (id === 'shopperbot' ? 'ShopperBot' : i
 export function emptyWallet(): WalletView {
   return { id: '', agent: '', mode: '', want: '', mustHave: [], mustNot: [], maxPerPurchase: 0, approveAbove: 0,
            totals: { budget: 0, funded: 0, balance: 0, withdrawn: 0, spent: 0, reserved: 0, remaining: 0, envelopes: [] },
-           purchases: [], activity: [], notes: [], agentMode: '', closed: false, stopped: false, error: '' };
+           purchases: [], activity: [], notes: [], agentMode: '', closed: false, stopped: false, error: '', renewals: [] };
 }
 
 export const CHECK_NAMES: Record<string, string> = {
@@ -127,6 +132,13 @@ export function reduceWallet(events: WalletEvent[]): WalletView {
       case 'withdraw_failed':
         v.error = `Returning your money failed (${e.error}).`;
         break;
+      case 'renewal': {
+        const r = e.renewal;
+        const row: Renewal = { ...r, price: num(r.price) };
+        const i = v.renewals.findIndex(x => x.id === r.id);
+        if (i >= 0) v.renewals[i] = row; else v.renewals.push(row);
+        break;
+      }
       case 'stopped':
         v.stopped = true;
         break;

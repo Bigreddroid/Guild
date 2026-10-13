@@ -38,6 +38,8 @@ Then it decides:
 
 Approved purchases are paid **from the loaded money to the seller's own PayPal account** with PayPal Payouts, using the account the seller publishes at `/.well-known/agent-pay.json`. Blocked purchases never reach PayPal. **Return unspent** refunds whatever is left to the owner's PayPal, and stopping or closing the wallet does it automatically.
 
+It also pays for **AI tools on repeat**: a subscription the AI keeps is checked again every period (real seller, same price) and paid from the wallet; a price rise pauses it, unused tools are flagged, and the owner cancels with one tap.
+
 The wallet also does **marketing that pays on proof**: book a creator from the marketing envelope, and the money is held inside the wallet until the creator's post is really live on their channel, links to the owner's page, shows an ad disclosure and names the product. Only then is the creator paid. A copied post, a hidden #ad or a missing link pays nothing.
 
 In the demo, the owner adds demo money (or pays with PayPal in sandbox), and ShopperBot starts. It tries a fake shop, ear pads, a stale price, and an injected "buy the case", and all four are blocked with reasons. The real $299 deal waits for one tap, and Harbor Audio is paid directly. The page reads "Guild stopped $515.00 of bad spending before any money moved."
@@ -75,7 +77,7 @@ The same verifier also powers **deal bounties**, an open market where agents rac
 - A creator is paid only for a post that is really live and really disclosed.
 - Unspent money always goes back to the owner.
 - Any MCP agent can use the wallet: we drove it with a real MCP client.
-- 252 tests.
+- 261 tests.
 
 ## What we learned
 
