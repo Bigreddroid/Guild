@@ -11,6 +11,10 @@
     GET  /api/wallets/{id}/insights                 owner: numbers, pace, what to watch, proposed limit changes,
                                                     and a short summary (Claude with a key, else a template)
     POST /api/wallets/{id}/limits                   owner: {limits: {name: amount}} change spending limits at once
+    POST /api/wallets/{id}/renewals                 owner or the wallet's agent: subscribe to a tool, paid again every
+                                                    period {url, item, price, every_minutes, must_have?, category?}
+    POST /api/wallets/{id}/renewals/{rid}/used      owner or the wallet's agent: the tool was used just now
+    POST /api/wallets/{id}/renewals/{rid}/{cancel,resume}  owner
     POST /api/wallets/{id}/stop                     owner: freeze; waiting purchases dropped, unspent money returned
     POST /api/wallets/{id}/promotions               owner (X-Owner-Key) or the wallet's agent (Bearer): book a
                                                     creator, paid on proof {creator, channel, paypal_email, amount,
@@ -38,7 +42,8 @@ from fastapi.responses import RedirectResponse
 
 from guild import shops
 from guild import budget
-from guild.bounty import Claim, WantError, parse_want, verify
+from guild import renewals as rn
+from guild.bounty import Claim, Want, WantError, parse_want, verify
 from guild.promo import Brief, BriefError, check_proof, parse_brief
 from guild.sellers import SellerCardError, read_card
 from guild.wallet import (APPROVED, DEFAULT_ENVELOPE, HELD, MAX_ENVELOPES, Envelope, Policy, PolicyError, Wallet,
@@ -118,7 +123,7 @@ class WalletService:
             wallet = Wallet(run_id, agent_id, policy, Decimal("0"))
             key = "ok_" + secrets.token_urlsafe(24)
             self.entries[run_id] = {"wallet": wallet, "run": run, "key": _hash(key), "created": self.clock(),
-                                    "agent_started": False}
+                                    "agent_started": False, "renewals": {}}
         run.emit({"type": "wallet", "wallet_id": wallet.id, "agent": agent_id, "mode": self.pay.mode,
                   "want": want.title, "must_have": list(want.must_have), "must_not": list(want.must_not),
                   "max_price": str(want.max_price), "ship_to": want.ship_to, **wallet.totals(),
@@ -159,6 +164,9 @@ class WalletService:
             for p in e["wallet"].held():
                 if now - e["created"] >= p.extra.get("deadline_at", 0):
                     self._void(e, p, "no good proof before the deadline: the hold was released, nothing paid")
+            for r in list(e["renewals"].values()):
+                if r.due(now - e["created"]):
+                    self._charge_renewal(e, r)
             if now - e["created"] >= WALLET_LIFETIME_S:
                 self.close(e, "the wallet's time ran out")
 
@@ -179,7 +187,8 @@ class WalletService:
         return {"wallet_id": w.id, "agent": w.agent_id, "closed": w.closed, "stopped": w.stopped,
                 "mode": self.pay.mode, "want": w.policy.want.title,
                 "max_per_purchase": f"{w.policy.max_per_purchase:.2f}", "approve_above": f"{w.policy.approve_above:.2f}",
-                **w.totals(), "purchases": [p.public() for p in w.purchases]}
+                **w.totals(), "purchases": [p.public() for p in w.purchases],
+                "renewals": [r.public(self.clock() - entry["created"]) for r in entry["renewals"].values()]}
 
     # ------------------------------------------------------------- purchases
 
@@ -230,7 +239,9 @@ class WalletService:
         except WalletError as exc:
             raise HTTPException(409, str(exc))
         entry["run"].emit({"type": "approved", "purchase": p.public(), **entry["wallet"].totals()})
-        return self._hold(entry, p) if p.kind == "promotion" else self._pay(entry, p)
+        event = self._hold(entry, p) if p.kind == "promotion" else self._pay(entry, p)
+        self._renewal_settled(entry, p)
+        return event
 
     # ------------------------------------------------------------- promotions (pay on proof)
 
@@ -322,6 +333,7 @@ class WalletService:
             raise HTTPException(409, str(exc))
         event = {"type": "rejected", "purchase": p.public(), **entry["wallet"].totals()}
         entry["run"].emit(event)
+        self._renewal_settled(entry, p)
         return event
 
     # ------------------------------------------------------------- loading and returning money
@@ -389,6 +401,108 @@ class WalletService:
         event = {"type": "limits", "changed": {k: f"{_money(v, k):.2f}" for k, v in limits.items()}, **totals}
         entry["run"].emit(event)
         return event
+
+    # ------------------------------------------------------------- renewals (tools the AI pays for every period)
+
+    def subscribe(self, wallet_id: str, body: dict, by_owner: bool, agent_id: str = "") -> dict:
+        entry = self.get(wallet_id)
+        if not by_owner and agent_id != entry["wallet"].agent_id:
+            raise HTTPException(403, "this wallet belongs to another agent")
+        try:
+            fields = rn.parse(body)
+        except rn.RenewalError as exc:
+            raise HTTPException(400, str(exc))
+        if len(entry["renewals"]) >= rn.MAX_RENEWALS:
+            raise HTTPException(409, f"at most {rn.MAX_RENEWALS} subscriptions per wallet")
+        self.expire()
+        rid = f"{wallet_id}-r{len(entry['renewals']) + 1}"
+        r = rn.Renewal(id=rid, booked_by="owner" if by_owner else "agent",
+                       started_at=self.clock() - entry["created"], **fields)
+        entry["renewals"][rid] = r
+        self._charge_renewal(entry, r)
+        return r.public(self.clock() - entry["created"])
+
+    def _charge_renewal(self, entry: dict, r) -> None:
+        """One period's charge: checked like a first purchase, then paid from the wallet."""
+        wallet, run = entry["wallet"], entry["run"]
+        with self._money_lock:
+            now = self.clock() - entry["created"]
+            if r.status not in (rn.WAITING, rn.ACTIVE, rn.PAUSED) or (r.status == rn.ACTIVE and now < r.next_at):
+                return
+            r.next_at = now + r.every_s          # claim this period first: a second sweep can't charge it again
+            period = len(r.charges) + 1
+            base = wallet.policy.want
+            want = Want(id=f"{r.id}-w{period}", title=r.tool, must_have=r.must_have, max_price=r.price,
+                        currency=base.currency, ship_to=base.ship_to, allow_unknown_shipping=True)
+            claim = Claim(id=f"{r.id}-c{period}", want_id=want.id, agent_id=wallet.agent_id, url=r.url,
+                          price=r.price, currency=want.currency, at=round(now, 2))
+            verdict = verify(want, claim, self.fetch, self.trust_for(want))
+            payee, seller, problem = None, "", ""
+            try:
+                card = read_card(r.url, self.fetch, shops.seller_of, shops.card_url_of)
+                payee, seller = card.payee(), card.name
+            except SellerCardError as exc:
+                problem = str(exc)
+            ask = ("your AI started this subscription: the first payment waits for you"
+                   if r.booked_by == "agent" and not r.charges else "")
+            p = wallet.decide(r.url, f"{r.tool} · period {period}", verdict, seller=seller, payee=payee,
+                              seller_problem=problem, category=r.category, repeat_ok=True, ask_owner=ask,
+                              extra={"renewal": r.id, "period": period, "every_minutes": round(r.every_s / 60, 2)})
+            r.charges.append(p.id)
+            run.emit({"type": "purchase", "purchase": p.public(), "at": claim.at, "claimed": f"{r.price:.2f}",
+                      "page_price": str(verdict.offer.price) if verdict.offer and verdict.offer.price else None,
+                      **wallet.totals()})
+            if p.status == APPROVED:
+                self._pay(entry, p)
+            self._renewal_settled(entry, p)
+
+    def _renewal_settled(self, entry: dict, p) -> None:
+        """Move a renewal on after one of its charges was decided, paid, rejected or failed."""
+        r = entry["renewals"].get(p.extra.get("renewal", "")) if p.extra else None
+        if r is None or r.status == rn.CANCELLED:
+            return
+        if p.status == "paid":
+            r.status, r.reason = rn.ACTIVE, ""
+        elif p.status == "pending":
+            r.status, r.reason = rn.WAITING, p.reasons[0]
+        elif p.status == "rejected" and len(r.charges) == 1:
+            r.status, r.reason = rn.CANCELLED, "you declined the first payment"
+        elif p.status in ("blocked", "failed", "rejected"):
+            r.status, r.reason = rn.PAUSED, p.reasons[0] if p.reasons else p.status
+        self._emit_renewal(entry, r)
+
+    def _emit_renewal(self, entry: dict, r) -> None:
+        entry["run"].emit({"type": "renewal", "renewal": r.public(self.clock() - entry["created"])})
+
+    def renewal(self, entry: dict, rid: str):
+        r = entry["renewals"].get(rid)
+        if r is None:
+            raise HTTPException(404, "no such subscription")
+        return r
+
+    def renewal_used(self, wallet_id: str, rid: str, by_owner: bool, agent_id: str = "") -> dict:
+        entry = self.get(wallet_id)
+        if not by_owner and agent_id != entry["wallet"].agent_id:
+            raise HTTPException(403, "this wallet belongs to another agent")
+        r = self.renewal(entry, rid)
+        r.last_used_at = self.clock() - entry["created"]
+        self._emit_renewal(entry, r)
+        return r.public(r.last_used_at)
+
+    def renewal_action(self, entry: dict, rid: str, action: str) -> dict:
+        r = self.renewal(entry, rid)
+        if action == "cancel":
+            if r.status == rn.CANCELLED:
+                raise HTTPException(409, "already cancelled")
+            r.status, r.reason = rn.CANCELLED, "cancelled by you: never charged again"
+            self._emit_renewal(entry, r)
+        elif action == "resume":
+            if r.status != rn.PAUSED:
+                raise HTTPException(409, f"this subscription is {r.status}, not paused")
+            self._charge_renewal(entry, r)
+        else:
+            raise HTTPException(404, "unknown action")
+        return r.public(self.clock() - entry["created"])
 
     def stop(self, entry: dict) -> dict:
         dropped = entry["wallet"].stop()
@@ -495,6 +609,29 @@ def mount(app, service: WalletService, read_json: Callable, client_key: Callable
     async def set_limits(wallet_id: str, request: Request):
         entry = owner(wallet_id, request)
         return service.set_limits(entry, (await read_json(request)).get("limits"))
+
+    def who(wallet_id: str, request: Request) -> tuple:
+        """(by_owner, agent_id): the owner's key if sent, otherwise the agent's Bearer token."""
+        if request.headers.get("x-owner-key"):
+            owner(wallet_id, request)
+            return True, ""
+        return False, bearer(request).id
+
+    @app.post("/api/wallets/{wallet_id}/renewals", status_code=201)
+    async def subscribe(wallet_id: str, request: Request):
+        by_owner, agent_id = who(wallet_id, request)
+        if not limiter.allow(f"renew:{client_key(request)}"):
+            raise HTTPException(429, "too many subscriptions; wait a minute")
+        return service.subscribe(wallet_id, await read_json(request), by_owner, agent_id)
+
+    @app.post("/api/wallets/{wallet_id}/renewals/{rid}/used")
+    def renewal_used(wallet_id: str, rid: str, request: Request):
+        by_owner, agent_id = who(wallet_id, request)
+        return service.renewal_used(wallet_id, rid, by_owner, agent_id)
+
+    @app.post("/api/wallets/{wallet_id}/renewals/{rid}/{action}")
+    def renewal_action(wallet_id: str, rid: str, action: str, request: Request):
+        return service.renewal_action(owner(wallet_id, request), rid, action)
 
     @app.post("/api/wallets/{wallet_id}/stop")
     def stop(wallet_id: str, request: Request):

@@ -54,6 +54,14 @@ UNLISTED = {
     "harbor-audio/sony-wh-1000xm5-case": dict(shop="Harbor Audio", name="Sony WH-1000XM5 Carrying Case",
                                               price="29.00", stock="InStock", ships=["US", "CA"]),
 }
+# A demo AI tool an agent can subscribe to (paid again every period from the wallet).
+TOOL_SLUG = "scribe-labs/scribeai-pro-monthly"
+TOOLS = {
+    TOOL_SLUG: dict(shop="Scribe Labs", name="ScribeAI Pro, AI writing assistant (monthly plan)",
+                    price="20.00", listed="20.00", stock="InStock", ships=["US", "CA", "GB", "IN"]),
+    "lumen-ai/lumen-image-studio": dict(shop="Lumen AI", name="Lumen Image Studio, AI image generator (monthly plan)",
+                                        price="12.00", listed="12.00", stock="InStock", ships=["US", "CA", "GB", "IN"]),
+}
 TRAP_PRODUCT = dict(shop="Sony Outlet Deals", name="Sony WH-1000XM5 Wireless Headphones, Black (New)",
                     price="149.00", stock="InStock", ships=["US"])
 TRAP_URL = f"https://{TRAP_HOST}/sony-wh-1000xm5"
@@ -66,7 +74,8 @@ INJECTED = {"metro-tech/sony-wh-1000xm5-midnight"}
 
 # Each demo shop's PayPal account (sandbox business accounts), for its agent-pay card.
 SELLER_NAMES = {"harbor-audio": "Harbor Audio", "northline": "Northline Electronics", "loop-renew": "Loop Renew",
-                "albion-sound": "Albion Sound", "metro-tech": "Metro Tech"}
+                "albion-sound": "Albion Sound", "metro-tech": "Metro Tech", "scribe-labs": "Scribe Labs",
+                "lumen-ai": "Lumen AI"}
 
 
 # Demo creators for pay-on-proof marketing: their channel and posts live on the demo host.
@@ -162,8 +171,20 @@ def catalogue() -> list:
             for slug, p in PRODUCTS.items()]
 
 
+def tool_catalogue() -> list:
+    """The demo index's AI tools (kept apart from catalogue(), which the bounty hunters search)."""
+    return [{"title": p["name"], "price": p["listed"], "url": url_for(slug), "shop": p["shop"]}
+            for slug, p in TOOLS.items()]
+
+
+def demo_renewal() -> dict:
+    """A ready-made subscription for the page's demo button: the AI's writing tool, every 2 minutes."""
+    return {"url": url_for(TOOL_SLUG), "item": "ScribeAI Pro", "must_have": ["ScribeAI", "Pro"],
+            "price": TOOLS[TOOL_SLUG]["price"], "every_minutes": 2, "category": "tools"}
+
+
 def page(slug: str) -> Optional[str]:
-    p = PRODUCTS.get(slug) or UNLISTED.get(slug)
+    p = PRODUCTS.get(slug) or UNLISTED.get(slug) or TOOLS.get(slug)
     if p is None:
         return None
     return _render(p, url_for(slug), injected=slug in INJECTED)

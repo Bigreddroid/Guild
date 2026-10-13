@@ -1,32 +1,36 @@
 import { type ReactNode, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './icons';
 import Insights from './Insights';
+import Renewals from './Renewals';
 import { CHECK_NAMES, agentName, emptyWallet, money, reduceWallet, type Activity, type Purchase,
          type WalletEvent, type WalletView } from './wallet';
 
 const Statement = lazy(() => import('./Statement'));
 
 const EVENTS = ['wallet', 'agent', 'purchase', 'promotion', 'approved', 'rejected', 'paid', 'held', 'proof', 'voided',
-                'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'limits', 'stopped', 'closed'];
+                'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'limits', 'renewal', 'stopped',
+                'closed'];
 const MCP = 'https://github.com/Bigreddroid/Guild/tree/main/examples/mcp_server';
 const AGENTS_GUIDE = 'https://github.com/Bigreddroid/Guild/blob/main/docs/AGENTS.md';
 
 interface Form { must_have: string; must_not: string; max_price: string; ship_to: string; budget: string;
-                 max_per_purchase: string; approve_above: string; marketing: string }
+                 max_per_purchase: string; approve_above: string; marketing: string; tools: string }
 const DEMO: Form = { must_have: 'Sony, WH-1000XM5', must_not: 'refurbished, renewed, used, case', max_price: '330',
-                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250', marketing: '60' };
+                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250', marketing: '60',
+                     tools: '40' };
 
-// The form's marketing amount becomes its own spending limit; shopping keeps the rest.
+// The form's marketing and tools amounts become their own spending limits; shopping keeps the rest.
 function walletBody(f: Form): Record<string, unknown> {
-  const { marketing, ...rest } = f;
-  const m = Number(marketing);
-  if (!(m > 0)) return rest;
-  const shopping = Number(f.budget) - m;
+  const { marketing, tools, ...rest } = f;
+  const side = { marketing: Number(marketing), tools: Number(tools) };
+  const named = Object.entries(side).filter(([, v]) => v > 0);
+  if (!named.length) return rest;
+  const shopping = Number(f.budget) - named.reduce((sum, [, v]) => sum + v, 0);
   const most = Math.min(Number(f.max_per_purchase), shopping);
   return { ...rest, envelopes: {
     ...(shopping > 0 ? { shopping: { limit: shopping.toFixed(2), max_per_purchase: most.toFixed(2),
                                      approve_above: Math.min(Number(f.approve_above), most).toFixed(2) } } : {}),
-    marketing: { limit: m.toFixed(2) } } };
+    ...Object.fromEntries(named.map(([k, v]) => [k, { limit: v.toFixed(2) }])) } };
 }
 
 const keyFor = (id: string) => `guildpay:key:${id}`;
@@ -355,6 +359,14 @@ export default function Wallet() {
             the <a href={AGENTS_GUIDE} target="_blank" rel="noopener noreferrer">REST API</a>. It can only ask; Guild checks, then pays from the loaded money.</p>
         </section>
 
+        {view.id && (
+          <Renewals renewals={view.renewals} owner={owner} busy={busy} closed={view.closed}
+            canStart={view.totals.remaining > 0}
+            start={() => fetch('/api/demo/renewal').then(r => r.json())
+              .then(({ demo: _d, ...body }) => call('POST', `/api/wallets/${walletId}/renewals`, body))}
+            act={(id, action) => call('POST', `/api/wallets/${walletId}/renewals/${id}/${action}`)} />
+        )}
+
         <section className="gp-card" aria-label="Pay a creator on proof">
           <div className="gp-card-head"><h2>Pay a creator on proof</h2><Icon name="megaphone" /></div>
           <p className="gp-small">Book a creator for a post. The money is held in your wallet and paid only when the post is live,
@@ -416,6 +428,7 @@ export default function Wallet() {
               {field('max_per_purchase', 'Most per purchase', { inputMode: 'decimal' })}
               {field('approve_above', 'Ask me above', { inputMode: 'decimal' })}
               {field('marketing', 'Of which for marketing', { inputMode: 'decimal' })}
+              {field('tools', 'Of which for AI tools', { inputMode: 'decimal' })}
               <button type="submit" className="gp-btn gp-btn-primary" disabled={busy}>{busy ? 'Opening…' : 'Open new wallet'}</button>
             </form>
           </details>

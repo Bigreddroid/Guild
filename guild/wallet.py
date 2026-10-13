@@ -247,7 +247,8 @@ class Wallet:
         return reasons, approve_above, category
 
     def decide(self, url: str, item: str, verdict: Verdict, seller: str = "", payee: Optional[dict] = None,
-               seller_problem: str = "", category: str = DEFAULT_ENVELOPE) -> Purchase:
+               seller_problem: str = "", category: str = DEFAULT_ENVELOPE, repeat_ok: bool = False,
+               ask_owner: str = "", extra: Optional[dict] = None) -> Purchase:
         """The agent asks to buy `url` from the `category` envelope; `verdict` is the
         verifier's check of that page against the owner's want. Returns the recorded
         purchase with its decision."""
@@ -260,18 +261,20 @@ class Wallet:
                 reasons.insert(0, more.pop(0))
             reasons += more
             key = canonical_url(url)
-            if any(canonical_url(p.url) == key and p.status in COMMITTED + OPEN for p in self.purchases):
+            # A renewal buys the same page again each period (repeat_ok); anything else only once.
+            if not repeat_ok and any(canonical_url(p.url) == key and p.status in COMMITTED + OPEN for p in self.purchases):
                 reasons.append("this item was already bought or is waiting for approval")
             if payee is None:
                 reasons.append(seller_problem or "the seller publishes no PayPal account to pay")
-            status = BLOCKED if reasons else (PENDING if price > approve_above else APPROVED)
+            status = BLOCKED if reasons else (PENDING if price > approve_above or ask_owner else APPROVED)
             if status == PENDING:
-                reasons = [f"{price} is above {approve_above}: waiting for the owner"]
+                reasons = [ask_owner if ask_owner and price <= approve_above
+                           else f"{price} is above {approve_above}: waiting for the owner"]
             elif status == APPROVED:
                 reasons = ["verified and within every rule"]
             purchase = Purchase(id=f"{self.id}-p{next(self._ids)}", url=url[:500], item=item[:160], price=price,
                                 status=status, reasons=reasons, checks=dict(verdict.checks), seller=seller,
-                                payee=payee if status != BLOCKED else None, category=category)
+                                payee=payee if status != BLOCKED else None, category=category, extra=dict(extra or {}))
             self.purchases.append(purchase)
             return purchase
 

@@ -28,7 +28,7 @@ Guild Pay sits between your agent and your money:
 
 ## The 2-minute demo
 
-You open a wallet that holds up to $400 (shopping limit $340, marketing $60), with at most $350 per purchase and an "ask me above $250" rule, for *Sony WH-1000XM5, new, ships to US*. You tap **Add demo money** (or **Pay with PayPal** in sandbox). Once the wallet has money, **ShopperBot** starts shopping. It makes every classic agent mistake. The wallet catches each one:
+You open a wallet that holds up to $400 (spending limits: shopping $300, marketing $60, AI tools $40), with at most $350 per purchase and an "ask me above $250" rule, for *Sony WH-1000XM5, new, ships to US*. You tap **Add demo money** (or **Pay with PayPal** in sandbox). Once the wallet has money, **ShopperBot** starts shopping. It makes every classic agent mistake. The wallet catches each one:
 
 | ShopperBot tries | Guild Pay | Which check |
 |---|---|---|
@@ -48,6 +48,7 @@ The wallet page shows:
 - **Activity:** money in and out, payments, blocked purchases and promotions, with filters; tap a row for its ✓/✗ checks;
 - side cards: **Your AI** (what it said, and how to connect your own over MCP or REST), **Pay a creator on proof**, and **Your rules** (with the spending limits).
 - **Your budget:** a short summary of where the money went (written by Claude when the server has an Anthropic key; otherwise a template, and it says which), what to watch (a limit nearly used up, repeated blocked attempts and the check that failed most, an unusually large payment), and proposed limit changes you apply with one tap;
+- **AI tools it pays for:** subscriptions your AI keeps (e.g. a writing tool every month). Each renewal is checked again like a new purchase (real seller, same price) and paid from the wallet; a price rise or a vanished seller pauses it instead of paying. A tool unused for two periods is flagged, and you cancel with one tap. A subscription your AI starts waits for your OK on its first payment. (PayPal doesn't let apps list a buyer's own PayPal subscriptions, so Guild runs renewals itself.)
 - **Statement** (AG Grid): every line with the money moved (+ in, − out), what was stopped, and the PayPal reference; search, sort, filter, Export CSV, and *left in wallet*.
 
 Without keys, money is labelled **demo money** (preview), and ShopperBot runs a labelled **script**. The wallet's decisions are never scripted.
@@ -144,7 +145,7 @@ Each integration has a labelled fallback. `/healthz` says what is live, simulate
 pip install -r requirements.txt
 (cd web && npm ci && npm run build)   # the page
 uvicorn guild.server:app              # http://127.0.0.1:8000 (opens an empty demo wallet)
-python3 -m unittest discover -s tests # 252 tests
+python3 -m unittest discover -s tests # 261 tests
 python3 -m guild                      # a deal bounty, narrated in the terminal
 ```
 

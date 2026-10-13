@@ -27,10 +27,10 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 TOP_UP = "400.00"
-# The same wallet the page opens for its demo: $400, shopping $340 (ask above $250), marketing $60.
+# The same wallet the page opens for its demo: $400, shopping $300 (ask above $250), marketing $60, tools $40.
 DEMO_WALLET = {"budget": "400", "max_per_purchase": "350", "approve_above": "250",
-               "envelopes": {"shopping": {"limit": "340", "max_per_purchase": "340", "approve_above": "250"},
-                             "marketing": {"limit": "60"}}}
+               "envelopes": {"shopping": {"limit": "300", "max_per_purchase": "300", "approve_above": "250"},
+                             "marketing": {"limit": "60"}, "tools": {"limit": "40"}}}
 
 
 class CheckFailed(Exception):

@@ -126,7 +126,7 @@ def trust_from_env(want) -> Trust:
     the labelled demo index. A failed search gives no listings, so claims fail closed."""
     from guild.agents import _env_channel3
     channel3 = _env_channel3(os.environ.get("CHANNEL3_API_KEY", ""))
-    listings = shops.catalogue()
+    listings = shops.catalogue() + shops.tool_catalogue()
     if channel3:
         try:
             listings = channel3.search(" ".join(want.must_have), limit=20, max_price=float(want.max_price) * 2)
@@ -312,6 +312,11 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
     def recent_deals(size: int = 10):
         """Deals Guild verified, newest first, with how much buyers saved (Elastic when configured)."""
         return deal_log.recent(min(max(size, 1), 50))
+
+    @app.get("/api/demo/renewal")
+    def demo_renewal():
+        """A ready-made subscription: a labelled demo AI writing tool, every 2 minutes."""
+        return {"demo": True, **shops.demo_renewal()}
 
     @app.get("/api/demo/promotion")
     def demo_promotion():
