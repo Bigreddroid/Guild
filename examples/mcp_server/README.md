@@ -14,6 +14,10 @@ Give any MCP agent (Claude Desktop, Claude Code, your own) a wallet it can spend
 **Tools:**
 - `wallet_status`
 - `search_products`: Guild's labelled demo index only.
-- `buy {url, item, price}`
+- `buy {url, item, price, category?}`
+- `book_promotion {creator, channel, paypal_email, amount, link, words?, deadline_minutes?, category?}`: always waits for the owner's OK, because the agent chose who gets paid.
+- `send_proof {purchase_id, url}`: the creator is paid only if the live post is on their channel, links to `link`, mentions `words` and visibly discloses the ad.
+- `subscribe_tool {url, item, price, every_minutes?, category?}`: the first payment waits for the owner. Every later period is checked again before paying, and only the owner can cancel.
+- `report_tool_use {renewal_id}`: a tool unused for two periods is flagged to the owner.
 
 The agent can only ask to buy. Guild checks the seller against an independent listing, the page price, the owner's want and the budget, then answers *paid*, *pending* (waiting for the owner) or *blocked* with reasons. PayPal pays the seller's own account only for purchases that are approved.
