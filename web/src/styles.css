@@ -191,6 +191,7 @@ button { font: inherit; cursor: pointer; }
 .gp-topup-lead { margin: 0; font-size: 14px; line-height: 1.5; color: #e2e8f0; }
 .gp-topup-lead b { color: #fff; }
 .gp-hint { margin: 0; font-size: 13px; color: #c7d2e5; line-height: 1.5; }
+.gp-hint a { color: #fff; }
 .gp-closed { margin: 14px 0 0; font-size: 14px; color: #c7d2e5; }
 .gp-alert { background: var(--bad-bg); color: var(--bad); border: 1px solid #fecdca; border-radius: 12px; padding: 12px 14px; font-size: 14px; }
 

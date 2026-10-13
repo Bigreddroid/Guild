@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
-from guild import funding, shops, vendor
+from guild import funding, readiness, shops, vendor
 from guild.agents import agent_modes, default_agents
 from guild.bounty import Trust, Want, WantError, parse_want
 from guild.deals import DealLog
@@ -353,7 +353,13 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
                             "shopperbot": "live (Claude)" if os.environ.get("ANTHROPIC_API_KEY")
                             and os.environ.get("GUILD_SHOPPER_LIVE") == "1" else "scripted"},
                 "prototype": {"lead": lead.label, "reviewer": reviewer.label,
-                              "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes()}}
+                              "agents": _agents_summary(agent_modes()), "agent_modes": agent_modes()},
+                "readiness": readiness.check(paypal, public_url or "")}
+
+    @app.get("/api/readiness")
+    def ready():
+        """What this server still needs for a live PayPal sandbox run (never shows keys or emails)."""
+        return readiness.check(paypal, public_url or "")
 
     @app.post("/api/runs")
     async def create_run(request: Request):
