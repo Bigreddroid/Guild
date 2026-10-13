@@ -1,7 +1,9 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './icons';
 import { CHECK_NAMES, agentName, emptyWallet, money, reduceWallet, type Activity, type Purchase,
          type WalletEvent, type WalletView } from './wallet';
+
+const Statement = lazy(() => import('./Statement'));
 
 const EVENTS = ['wallet', 'agent', 'purchase', 'promotion', 'approved', 'rejected', 'paid', 'held', 'proof', 'voided',
                 'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'stopped', 'closed'];
@@ -410,6 +412,13 @@ export default function Wallet() {
           </details>
         </section>
       </aside>
+      {view.activity.length > 0 && (
+        <div className="gp-wide">
+          <Suspense fallback={<section className="gp-card"><p className="gp-empty">Loading the statement…</p></section>}>
+            <Statement activity={view.activity} />
+          </Suspense>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,6 +18,7 @@ export interface Totals {
 export type Tone = 'in' | 'out' | 'blocked' | 'waiting' | 'held' | 'info';
 export interface Activity {
   key: string; tone: Tone; title: string; detail: string; amount: number | null; status: string; purchase?: Purchase;
+  ref?: string;   // PayPal order or payout batch id
 }
 export interface WalletView {
   id: string; agent: string; mode: string; want: string; mustHave: string[]; mustNot: string[];
@@ -95,7 +96,7 @@ export function reduceWallet(events: WalletEvent[]): WalletView {
     totals(e);
     if (isMoneyIn(e)) {
       const demo = e.mode === 'preview';
-      feed.push({ key: `in${i}`, tone: 'in', status: 'added', amount: num(e.type === 'wallet' ? e.funded : e.amount),
+      feed.push({ key: `in${i}`, tone: 'in', status: 'added', ref: e.order_id ?? '', amount: num(e.type === 'wallet' ? e.funded : e.amount),
                   title: demo ? 'Demo money added' : 'Added with PayPal',
                   detail: demo ? 'No PayPal keys on this server, so nothing real moved' : `PayPal order ${e.order_id ?? ''}` });
     }
@@ -138,7 +139,7 @@ export function reduceWallet(events: WalletEvent[]): WalletView {
   v.activity = feed.map(f => {
     if (typeof f !== 'string') return f;
     const p = byId.get(f)!;
-    return { key: p.id, tone: TONE[p.status] ?? 'info', status: p.status, amount: p.price, purchase: p,
+    return { key: p.id, tone: TONE[p.status] ?? 'info', status: p.status, amount: p.price, purchase: p, ref: p.order_id,
              title: p.kind === 'promotion' ? `Promotion by ${p.creator}` : p.item,
              detail: p.kind === 'promotion' ? `${p.shop} · pays on proof` : p.shop };
   }).reverse();

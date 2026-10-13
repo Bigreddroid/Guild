@@ -11,6 +11,8 @@ export default defineConfig({
         // Keep each sponsor library in its own cacheable chunk.
         manualChunks(id) {
           if (id.includes('node_modules/@bryntum')) return 'bryntum';
+          // The wallet's statement needs only AG Grid; AG Studio (bounties) builds on it.
+          if (['ag-grid-community', 'ag-grid-react', 'ag-stack', 'ag-charts-types'].some(m => id.includes(`node_modules/${m}/`))) return 'ag-grid';
           if (id.includes('node_modules/ag-')) return 'ag-studio';
           if (id.includes('node_modules/react') || id.includes('node_modules/scheduler')) return 'react';
         },
