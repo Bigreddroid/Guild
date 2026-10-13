@@ -484,6 +484,9 @@ def create_app(brain=None, paypal=_NOT_SET, public_url: Optional[str] = None, hu
         shopper_fn = shopper
     mount_wallets(app, wallet_service, read_json, client_key, bearer, RateLimiter(limit=30, window_s=60),
                   start_house_agent=shopper_fn)
+    if shopper is _NOT_SET:   # the real server: Claude writes the budget summary when a key is set
+        from guild.budget import client_from_env as budget_client_from_env
+        wallet_service.budget_client = budget_client_from_env()
     app.state.wallets = wallet_service
 
     if (WEB_DIST / "index.html").exists():

@@ -1,12 +1,13 @@
 import { type ReactNode, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './icons';
+import Insights from './Insights';
 import { CHECK_NAMES, agentName, emptyWallet, money, reduceWallet, type Activity, type Purchase,
          type WalletEvent, type WalletView } from './wallet';
 
 const Statement = lazy(() => import('./Statement'));
 
 const EVENTS = ['wallet', 'agent', 'purchase', 'promotion', 'approved', 'rejected', 'paid', 'held', 'proof', 'voided',
-                'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'stopped', 'closed'];
+                'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'limits', 'stopped', 'closed'];
 const MCP = 'https://github.com/Bigreddroid/Guild/tree/main/examples/mcp_server';
 const AGENTS_GUIDE = 'https://github.com/Bigreddroid/Guild/blob/main/docs/AGENTS.md';
 
@@ -332,6 +333,10 @@ export default function Wallet() {
       </div>
 
       <aside className="gp-side">
+        {owner && view.id && view.totals.funded + view.totals.withdrawn > 0 && (
+          <Insights walletId={walletId} ownerKey={ownerKey} version={events.length} busy={busy}
+            apply={limits => call('POST', `/api/wallets/${walletId}/limits`, { limits })} />
+        )}
         <section className="gp-card" aria-label="Your AI">
           <div className="gp-agent">
             <span className="gp-avatar gp-avatar-ai"><Icon name="bot" /></span>

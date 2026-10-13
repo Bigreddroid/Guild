@@ -28,7 +28,7 @@ from __future__ import annotations
 import itertools
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Optional
 
@@ -326,6 +326,32 @@ class Wallet:
 
     def held(self) -> list:
         return [p for p in self.purchases if p.status == HELD]
+
+    def set_limits(self, limits: dict) -> dict:
+        """The owner changes spending limits, e.g. {"marketing": 100, "shopping": 300}, all at once (so
+        moving room between two limits never passes through an over-budget state). A limit can't drop
+        below what that envelope has already spent or reserved; per-purchase amounts shrink with it."""
+        with self._lock:
+            if self.closed or self.stopped:
+                raise WalletError("this wallet is closed")
+            envs = dict(self.policy.envelopes)
+            for name, raw in limits.items():
+                if name not in envs:
+                    raise WalletError(f"there is no {str(name)[:24]!r} limit in this wallet")
+                limit = Decimal(raw).quantize(CENT)
+                used = self.spent(name) + self.reserved(name)
+                if limit < used:
+                    raise WalletError(f"{name} has already used {used:.2f}; its limit can't go below that")
+                if limit <= 0:
+                    raise WalletError(f"{name}: a limit must be more than 0")
+                old = envs[name]
+                most = min(old.max_per_purchase, limit)
+                envs[name] = Envelope(limit, most, min(old.approve_above, most))
+            try:
+                self.policy = replace(self.policy, envelopes=envs)
+            except PolicyError as exc:
+                raise WalletError(str(exc))
+            return self.totals()
 
     def _get(self, purchase_id: str) -> Purchase:
         for p in self.purchases:
