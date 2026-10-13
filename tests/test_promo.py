@@ -13,8 +13,8 @@ from guild.registry import Registry
 from guild.wallet import (APPROVED, BLOCKED, HELD, PAID, PENDING, VOIDED, Envelope, Policy, Wallet,
                           WalletError)
 from guild.walletpay import WalletPay
-from tests.test_wallet_api import app
-from tests.test_walletpay import PUBLIC, FakeSandbox, link_of
+from tests.test_wallet_api import app, open_wallet
+from tests.test_walletpay import PUBLIC, FakeSandbox
 
 FETCH = SafeFetcher(local=shops.serve)
 DEMO = shops.demo_brief()
@@ -118,9 +118,9 @@ class WalletHoldTests(unittest.TestCase):
 class PromotionApiTests(unittest.TestCase):
     def setUp(self):
         self.c = app(shopper=None, registry=Registry())
-        r = self.c.post("/api/wallets", json={"envelopes": {"shopping": {"limit": "300"},
-                                                            "marketing": {"limit": "100", "max_per_purchase": "60"}}})
-        self.wid, self.key = r.json()["wallet_id"], r.json()["owner_key"]
+        r = open_wallet(self.c, {"envelopes": {"shopping": {"limit": "300"},
+                                               "marketing": {"limit": "100", "max_per_purchase": "60"}}})
+        self.wid, self.key = r["wallet_id"], r["owner_key"]
         self.owner = {"X-Owner-Key": self.key}
 
     def book(self, **change):
@@ -150,7 +150,7 @@ class PromotionApiTests(unittest.TestCase):
         self.assertEqual(len(paid["purchase"]["proofs"]), 4)
         self.assertEqual(self.proof(pid, PROOFS["good"]).status_code, 409)   # paid once
         types = [e["type"] for e in self.c.get(f"/api/runs/{self.wid}").json()["events"]]
-        self.assertEqual(types[1:], ["promotion", "held", "proof", "proof", "proof", "proof", "paid"])
+        self.assertEqual(types[1:], ["topped_up", "promotion", "held", "proof", "proof", "proof", "proof", "paid"])
 
     def test_limits_cancel_and_deadline(self):
         self.assertEqual(self.book(amount="61").json()["status"], "blocked")   # over the marketing max of 60
@@ -179,8 +179,8 @@ class PromotionApiTests(unittest.TestCase):
         reg = Registry()
         c = app(shopper=None, registry=reg)
         bot = c.post("/api/agents", json={"name": "Promo Bot", "payout_email": "dev@example.com"}).json()
-        r = c.post("/api/wallets", json={"agent": bot["agent_id"], "envelopes": {"shopping": {"limit": "300"},
-                                                                                "marketing": {"limit": "100"}}}).json()
+        r = open_wallet(c, {"agent": bot["agent_id"], "envelopes": {"shopping": {"limit": "300"},
+                                                                    "marketing": {"limit": "100"}}})
         wid, owner = r["wallet_id"], {"X-Owner-Key": r["owner_key"]}
         body = {k: v for k, v in DEMO.items() if k != "proofs"}
         p = c.post(f"/api/wallets/{wid}/promotions", json={**body, "amount": "5"},
@@ -191,57 +191,31 @@ class PromotionApiTests(unittest.TestCase):
 
 
 class SandboxHoldTests(unittest.TestCase):
-    def wallet_and_promo(self, pay):
-        w = Wallet("w1", "a", split_policy())
+    def test_held_inside_the_wallet_then_paid_out_to_the_creator(self):
+        fake = FakeSandbox()
+        pay = WalletPay(PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake), PUBLIC)
+        w = Wallet("w1", "a", split_policy(), Decimal("100"))
         p = w.book("Promo", Decimal("40"), "marketing", {"email_address": "maya@personal.example.com"},
                    shops.CREATOR_CHANNEL, {"creator": "Maya"}, True)
-        return w, p
-
-    def test_hold_from_the_mandate_then_capture_to_the_creator(self):
-        fake = FakeSandbox()
-        pay = WalletPay(PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake), PUBLIC)
-        w, p = self.wallet_and_promo(pay)
-        w.mandate_id = "PT1"
         self.assertEqual(pay.hold(w, p)["type"], "held")
-        order = fake.calls[-1][3]
-        self.assertEqual((order["intent"], order["purchase_units"][0]["payee"], order["payment_source"]["paypal"]),
-                         ("AUTHORIZE", {"email_address": "maya@personal.example.com"}, {"vault_id": "PT1"}))
+        self.assertEqual((fake.paths(), w.remaining()), ([], Decimal("60")))   # nothing leaves until the proof
         event = pay.capture(w, p, "proof checked")
-        self.assertEqual((event["type"], p.status, p.capture_id), ("paid", PAID, "CAP-AUTH-ORDER1"))
-        self.assertEqual(fake.calls[-1][2], "AUTH-ORDER1-capture")          # idempotent per hold
-
-    def test_checkout_hold_and_void(self):
-        fake = FakeSandbox()
-        pay = WalletPay(PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake), PUBLIC)
-        w, p = self.wallet_and_promo(pay)
-        event = pay.hold(w, p)
-        self.assertEqual(event["type"], "checkout")
-        ret = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]
-        self.assertEqual(ret["user_action"], "CONTINUE")
-        self.assertTrue(ret["return_url"].startswith(f"{PUBLIC}/api/wallets/paypal/hold?link="))
-        with self.assertRaises(WalletError):
-            pay.finish_hold(link_of(ret["return_url"]), "WRONG", {"w1": w})
-        # links are single-use, so the mismatch spent that one: hold a second promotion
+        self.assertEqual((event["type"], p.status, p.order_id), ("paid", PAID, f"BATCH-{p.id}"))
+        self.assertEqual(fake.payouts()[0]["items"][0]["receiver"], "maya@personal.example.com")
         p2 = w.book("Promo 2", Decimal("10"), "marketing", {"email_address": "m@x.example.com"},
                     shops.CREATOR_CHANNEL, {}, True)
         pay.hold(w, p2)
-        ret2 = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]["return_url"]
-        _, held = pay.finish_hold(link_of(ret2), "ORDER2", {"w1": w})
-        self.assertEqual((held["type"], p2.status, p2.authorization_id), ("held", HELD, "AUTH-ORDER2"))
-        voided = pay.void(w, p2, "deadline")
-        self.assertEqual((voided["type"], p2.status, fake.holds["AUTH-ORDER2"]), ("voided", VOIDED, "VOIDED"))
+        self.assertEqual((pay.void(w, p2, "deadline")["type"], p2.status, len(fake.payouts())), ("voided", VOIDED, 1))
 
-    def test_a_void_paypal_refuses_only_counts_if_the_hold_is_gone(self):
+    def test_a_failed_payout_keeps_the_money_held(self):
         from guild.paypal import PayPalError
-        fake = FakeSandbox(fail={"/void": PayPalError(422, {"name": "UNPROCESSABLE_ENTITY"})})
+        fake = FakeSandbox(fail={"/payouts": PayPalError(422, {"name": "RECEIVER_UNREGISTERED"})})
         pay = WalletPay(PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake), PUBLIC)
-        w, p = self.wallet_and_promo(pay)
-        w.mandate_id = "PT1"
+        w = Wallet("w1", "a", split_policy(), Decimal("100"))
+        p = w.book("Promo", Decimal("40"), "marketing", {"email_address": "x@example.com"}, shops.CREATOR_CHANNEL, {}, True)
         pay.hold(w, p)
-        self.assertEqual(pay.void(w, p, "x")["type"], "void_failed")      # still CREATED at PayPal
+        self.assertEqual(pay.capture(w, p, "ok")["type"], "capture_failed")
         self.assertEqual(p.status, HELD)
-        fake.holds[p.authorization_id] = "EXPIRED"
-        self.assertEqual(pay.void(w, p, "x")["type"], "voided")
 
 
 if __name__ == "__main__":

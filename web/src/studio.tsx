@@ -4,7 +4,6 @@ import type { CustomCellRendererProps } from 'ag-grid-react';
 import { createWidgets } from 'ag-studio-react';
 import { studioTheme } from 'ag-studio';
 import type { HuntView } from './hunt';
-import type { WalletView } from './wallet';
 
 const USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const f = (id: string, format: string, name?: string) => ({
@@ -96,72 +95,6 @@ export const initialState = {
 };
 
 // ------------------------------------------------------------------ Guild Pay wallet
-
-export function walletData(v: WalletView) {
-  const by = (s: string) => v.purchases.filter(p => p.status === s).length;
-  return {
-    description: 'One Guild Pay wallet: every purchase the agent asked for and what the wallet decided.',
-    sources: [
-      {
-        id: 'purchases', name: 'Purchases', description: 'Each purchase request, the decision, and why.',
-        data: v.purchases.map((p, i) => ({ n: i + 1, item: p.item, shop: p.shop, price: p.price, status: p.status,
-                                            why: p.reasons.join('; '), at: p.at, seller: p.seller || p.shop,
-                                            paid: p.status === 'paid' ? p.price : 0,
-                                            stopped: p.status === 'blocked' ? p.price : 0 })),
-        fields: [f('n', 'integerFormat', '#'), f('item', 'textFormat', 'Item'), f('shop', 'textFormat', 'Shop'),
-                 f('price', 'currencyFormat', 'Price'), f('status', 'textFormat', 'Decision'), f('why', 'textFormat', 'Why'),
-                 f('at', 'decimalFormat', 'At (s)'), f('seller', 'textFormat', 'Paid to'),
-                 f('paid', 'currencyFormat', 'Paid'), f('stopped', 'currencyFormat', 'Blocked')],
-      },
-      {
-        // Fixed order so the palette gives approved green, blocked red, waiting amber.
-        id: 'decisions', name: 'Decisions', description: 'How many requests each decision got.',
-        data: [{ decision: 'paid or approved', count: by('paid') + by('approved') }, { decision: 'blocked', count: by('blocked') },
-               { decision: 'waiting for you', count: by('pending') }, { decision: 'rejected or refunded', count: by('rejected') + by('refunded') }],
-        fields: [f('decision', 'textFormat', 'Decision'), f('count', 'integerFormat', 'Requests')],
-      },
-      {
-        id: 'budget', name: 'Budget', description: 'The owner budget and where it stands.',
-        data: [{ ...v.totals, blocked: v.purchases.filter(p => p.status === 'blocked').reduce((s, p) => s + p.price, 0) }],
-        fields: [f('budget', 'currencyFormat', 'Budget'), f('spent', 'currencyFormat', 'Spent'),
-                 f('reserved', 'currencyFormat', 'Waiting for you'), f('remaining', 'currencyFormat', 'Left'),
-                 f('blocked', 'currencyFormat', 'Blocked spend')],
-      },
-    ],
-  };
-}
-
-export const walletInitialState = {
-  selectedPageId: 'wallet',
-  pages: [{
-    id: 'wallet',
-    widgets: {
-      spent: { type: 'value', dataMapping: { value: [ref('budget.spent', 'sum')] }, format: title('Spent') },
-      left: { type: 'value', dataMapping: { value: [ref('budget.remaining', 'sum')] }, format: title('Left') },
-      waiting: { type: 'value', dataMapping: { value: [ref('budget.reserved', 'sum')] }, format: title('Waiting for you') },
-      blocked: { type: 'value', dataMapping: { value: [ref('budget.blocked', 'sum')] }, format: title('Bad spend blocked') },
-      decisions: {
-        type: 'donut-chart',
-        dataMapping: { categoryKey: [ref('decisions.decision')], valueKey: [ref('decisions.count', 'sum')] },
-        format: title('What the wallet decided'),
-      },
-      byShop: {
-        type: 'bar-chart-grouped',
-        dataMapping: { categoryKey: [ref('purchases.shop')], valueKey: [ref('purchases.paid', 'sum'), ref('purchases.stopped', 'sum')] },
-        format: title('By shop: paid vs blocked'),
-      },
-      purchases: {
-        type: 'grid',
-        dataMapping: { cols: ['n', 'item', 'shop', 'price', 'status', 'why'].map(c => ref(`purchases.${c}`)) },
-        format: title('Every purchase request, checked before any money moved'),
-      },
-    },
-    widgetLayout: {
-      spent: at(0, 0, 6, 7), left: at(6, 0, 6, 7), waiting: at(12, 0, 6, 7), blocked: at(18, 0, 6, 7),
-      decisions: at(0, 7, 10, 17), byShop: at(10, 7, 14, 17), purchases: at(0, 24, 24, 20),
-    },
-  }],
-};
 
 export const guildTheme = studioTheme.withParams({
   accentColor: '#1f5fbf',

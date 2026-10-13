@@ -1,71 +1,174 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CHECK_NAMES, emptyWallet, reduceWallet, type Purchase, type WalletEvent } from './wallet';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Icon } from './icons';
+import { CHECK_NAMES, agentName, emptyWallet, money, reduceWallet, type Activity, type Purchase,
+         type WalletEvent, type WalletView } from './wallet';
 
-const Dashboard = lazy(() => import('./Dashboard'));
-const Timeline = lazy(() => import('./Timeline'));
-const Loading = ({ what }: { what: string }) => <p className="muted small loading">Loading {what}…</p>;
-
-const EVENTS = ['wallet', 'agent', 'purchase', 'approved', 'rejected', 'paid', 'checkout', 'failed', 'refunded',
-                'refund_failed', 'mandate', 'stopped', 'closed'];
+const EVENTS = ['wallet', 'agent', 'purchase', 'promotion', 'approved', 'rejected', 'paid', 'held', 'proof', 'voided',
+                'failed', 'capture_failed', 'topped_up', 'withdrawn', 'withdraw_failed', 'stopped', 'closed'];
 const MCP = 'https://github.com/Bigreddroid/Guild/tree/main/examples/mcp_server';
+const AGENTS_GUIDE = 'https://github.com/Bigreddroid/Guild/blob/main/docs/AGENTS.md';
 
 interface Form { must_have: string; must_not: string; max_price: string; ship_to: string; budget: string;
-                 max_per_purchase: string; approve_above: string; marketing: string; tools: string; people: string }
+                 max_per_purchase: string; approve_above: string; marketing: string }
 const DEMO: Form = { must_have: 'Sony, WH-1000XM5', must_not: 'refurbished, renewed, used, case', max_price: '330',
-                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250',
-                     marketing: '', tools: '', people: '' };
-const SIDE_ENVELOPES = ['marketing', 'tools', 'people'] as const;
+                     ship_to: 'US', budget: '400', max_per_purchase: '350', approve_above: '250', marketing: '60' };
 
-// The form's envelope amounts become the API's envelopes; shopping keeps whatever is left.
+// The form's marketing amount becomes its own spending limit; shopping keeps the rest.
 function walletBody(f: Form): Record<string, unknown> {
-  const { marketing, tools, people, ...rest } = f;
-  const amounts = { marketing, tools, people };
-  const side = SIDE_ENVELOPES.filter(n => Number(amounts[n]) > 0);
-  if (!side.length) return rest;
-  const shopping = Number(f.budget) - side.reduce((sum, n) => sum + Number(amounts[n]), 0);
+  const { marketing, ...rest } = f;
+  const m = Number(marketing);
+  if (!(m > 0)) return rest;
+  const shopping = Number(f.budget) - m;
   const most = Math.min(Number(f.max_per_purchase), shopping);
-  const envelopes: Record<string, Record<string, string>> = {};
-  if (shopping > 0) envelopes.shopping = { limit: shopping.toFixed(2), max_per_purchase: most.toFixed(2),
-                                           approve_above: Math.min(Number(f.approve_above), most).toFixed(2) };
-  for (const n of side) envelopes[n] = { limit: Number(amounts[n]).toFixed(2) };
-  return { ...rest, envelopes };
+  return { ...rest, envelopes: {
+    ...(shopping > 0 ? { shopping: { limit: shopping.toFixed(2), max_per_purchase: most.toFixed(2),
+                                     approve_above: Math.min(Number(f.approve_above), most).toFixed(2) } } : {}),
+    marketing: { limit: m.toFixed(2) } } };
 }
 
 const keyFor = (id: string) => `guildpay:key:${id}`;
 const loadKey = (id: string) => { try { return sessionStorage.getItem(keyFor(id)) ?? ''; } catch { return ''; } };
 const saveKey = (id: string, key: string) => { try { sessionStorage.setItem(keyFor(id), key); } catch { /* private mode */ } };
-const money = (n: number) => `$${n.toFixed(2)}`;
-const ICON: Record<string, string> = { paid: '✓', approved: '✓', pending: '‖', blocked: '✗', rejected: '–', refunded: '↩', failed: '!' };
 
-function PurchaseCard({ p, owner, act }: { p: Purchase; owner: boolean; act: (id: string, a: string) => void }) {
+const STATUS: Record<string, string> = {
+  paid: 'Paid', approved: 'Paying', blocked: 'Blocked', pending: 'Needs your OK', held: 'On hold', rejected: 'Declined',
+  failed: 'Failed', voided: 'Released', refunded: 'Refunded', added: 'Added', returned: 'Returned',
+};
+const TONE_ICON: Record<string, string> = { in: 'in', out: 'out', blocked: 'shieldX', waiting: 'clock', held: 'clock', info: 'x' };
+
+// ------------------------------------------------------------------ pieces
+
+function Checks({ checks }: { checks: Record<string, boolean> }) {
+  const entries = Object.entries(checks);
+  if (!entries.length) return null;
   return (
-    <li className={`buy buy-${p.status}`}>
-      <div className="buy-head">
-        <span className="buy-icon" aria-hidden>{ICON[p.status] ?? '•'}</span>
-        <b>{money(p.price)}</b> <span className="buy-item">{p.item}</span>
-        <span className="muted"> · {p.shop}</span>
-        {p.category !== 'shopping' && <span className="pill pill-cat">{p.category}</span>}
-        <span className={`pill pill-${p.status}`}>{p.status === 'pending' ? 'waiting for you' : p.status}</span>
-      </div>
-      <div className="buy-why">{p.reasons.join('; ')}</div>
-      {Object.keys(p.checks).length > 0 && (
-        <div className="checks">{Object.entries(p.checks).map(([k, ok]) => (
-          <span key={k} className={`check ${ok ? 'ok' : 'no'}`}>{ok ? '✓' : '✗'} {CHECK_NAMES[k] ?? k}</span>
-        ))}</div>
-      )}
-      {p.status === 'paid' && p.seller && <div className="small muted">Paid to {p.seller}{p.order_id ? ` · ${p.order_id}` : ''}</div>}
-      {owner && p.status === 'pending' && (
-        <div className="buy-actions">
-          <button className="ok" onClick={() => act(p.id, 'approve')}>Approve {money(p.price)}</button>
-          <button className="ghost" onClick={() => act(p.id, 'reject')}>Reject</button>
-        </div>
-      )}
-      {owner && p.status === 'paid' && (
-        <div className="buy-actions"><button className="ghost" onClick={() => act(p.id, 'refund')}>Refund</button></div>
-      )}
+    <ul className="gp-checks">
+      {entries.map(([k, ok]) => (
+        <li key={k} className={ok ? 'ok' : 'no'}>
+          <Icon name={ok ? 'check' : 'x'} size={14} label={ok ? 'passed' : 'failed'} /> {CHECK_NAMES[k] ?? k}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Row({ a, open, toggle, children }: { a: Activity; open: boolean; toggle: () => void; children?: ReactNode }) {
+  const p = a.purchase;
+  const expandable = !!p;
+  return (
+    <li className={`gp-row tone-${a.tone}${open ? ' open' : ''}`}>
+      <button className="gp-row-main" onClick={toggle} disabled={!expandable} aria-expanded={expandable ? open : undefined}>
+        <span className="gp-avatar"><Icon name={a.purchase?.kind === 'promotion' && a.tone !== 'blocked' ? 'megaphone' : TONE_ICON[a.tone]} /></span>
+        <span className="gp-row-text">
+          <span className="gp-row-title">{a.title}</span>
+          <span className="gp-row-sub">
+            {a.detail}
+            {p && p.category !== 'shopping' && <span className="gp-tag">{p.category}</span>}
+          </span>
+        </span>
+        <span className="gp-row-amount">
+          {a.amount !== null && <span className="gp-amt">{a.tone === 'in' ? '+' : ''}{money(a.amount)}</span>}
+          <span className="gp-status">{STATUS[a.status] ?? a.status}</span>
+        </span>
+        {expandable && <span className="gp-chev"><Icon name="chevron" size={16} /></span>}
+      </button>
+      {open && p && <div className="gp-row-detail">{children}</div>}
     </li>
   );
 }
+
+function PurchaseDetail({ p }: { p: Purchase }) {
+  return (
+    <>
+      <p className="gp-why">{p.reasons.join(' · ')}</p>
+      <Checks checks={p.checks} />
+      {p.kind === 'promotion' && p.proofs.length > 0 && (
+        <ol className="gp-proofs">
+          {p.proofs.map((pr, i) => (
+            <li key={i} className={pr.valid ? 'ok' : 'no'}>
+              <Icon name={pr.valid ? 'check' : 'x'} size={14} />
+              <span>
+                <span className="gp-proof-url">{pr.url.replace(/^https:\/\//, '')}</span>
+                {!pr.valid && <span className="gp-proof-why">{pr.reasons.join('; ')}</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <div className="gp-meta">
+        {p.kind === 'buy' && <a href={p.url} target="_blank" rel="noopener noreferrer">Open the page <Icon name="link" size={13} /></a>}
+        {p.status === 'paid' && p.order_id && <span>Paid to {p.seller || p.shop} · {p.order_id}</span>}
+      </div>
+    </>
+  );
+}
+
+function BalanceCard({ v, owner, onTopUp, onWithdraw, onStop, busy }: {
+  v: WalletView; owner: boolean; busy: boolean; onTopUp: (amount: string) => void; onWithdraw: () => void; onStop: () => void;
+}) {
+  const t = v.totals;
+  const [adding, setAdding] = useState(false);
+  const [typed, setTyped] = useState('');
+  const room = Math.max(0, t.budget - t.balance);
+  const amount = typed || String(room);
+  const empty = !!v.id && t.funded === 0 && t.spent === 0 && !v.closed;
+  const open = adding || empty;
+  const pct = (n: number) => `${t.funded > 0 ? Math.min(100, (n / t.funded) * 100) : 0}%`;
+  const live = !v.closed && owner && !!v.id;
+  return (
+    <section className="gp-balance" aria-label="Balance">
+      <div className="gp-balance-top">
+        <span className="gp-label">Available to your AI</span>
+        <span className="gp-mode">{v.mode === 'sandbox' ? 'PayPal sandbox' : v.mode ? 'Demo money' : ''}</span>
+      </div>
+      <div className="gp-big" aria-live="polite">{v.id ? money(t.remaining) : '—'}</div>
+      <div className="gp-bar" aria-hidden>
+        <span className="b-spent" style={{ width: pct(t.spent) }} />
+        <span className="b-hold" style={{ width: pct(t.reserved) }} />
+      </div>
+      <dl className="gp-stats">
+        <div><dt>Loaded</dt><dd>{money(t.funded)}</dd></div>
+        <div><dt><i className="sw sw-spent" />Spent</dt><dd>{money(t.spent)}</dd></div>
+        <div><dt><i className="sw sw-hold" />On hold</dt><dd>{money(t.reserved)}</dd></div>
+      </dl>
+      {live && (
+        <div className="gp-actions">
+          {!empty && (
+            <button className="gp-btn gp-btn-paypal" onClick={() => setAdding(a => !a)} aria-expanded={open} disabled={room <= 0}>
+              <Icon name="plus" /> Add money
+            </button>
+          )}
+          <button className="gp-btn gp-btn-glass" onClick={onWithdraw} disabled={busy || t.remaining <= 0}>
+            <Icon name="undo" /> Return unspent
+          </button>
+          <button className="gp-btn gp-btn-glass" onClick={onStop} disabled={busy}>
+            <Icon name="lock" /> Stop wallet
+          </button>
+        </div>
+      )}
+      {live && open && (
+        <form className="gp-topup" onSubmit={e => { e.preventDefault(); onTopUp(amount); setAdding(false); setTyped(''); }}>
+          {empty && <p className="gp-topup-lead"><b>Load your wallet to start.</b> Your AI can only spend what you put in, and anything unspent comes back to you.</p>}
+          <div className="gp-chips" role="group" aria-label="Amount">
+            {[...new Set([50, 100, Math.floor(room)])].filter(n => n > 0 && n <= room).map(n => (
+              <button type="button" key={n} className={amount === String(n) ? 'on' : ''} onClick={() => setTyped(String(n))}>${n}</button>
+            ))}
+            <label className="gp-custom"><span className="sr">Amount</span>$
+              <input inputMode="decimal" value={amount} onChange={e => setTyped(e.target.value)} aria-label="Amount in dollars" />
+            </label>
+          </div>
+          <button type="submit" className="gp-btn gp-btn-paypal" disabled={busy || !(Number(amount) > 0) || Number(amount) > room}>
+            {v.mode === 'sandbox' ? 'Pay with PayPal' : 'Add demo money'}
+          </button>
+          <p className="gp-hint">The wallet holds up to {money(t.budget)}; you can add {money(room)}. Your AI can never spend more than what's loaded.</p>
+        </form>
+      )}
+      {v.closed && <p className="gp-closed">This wallet is closed. Anything unspent went back to you.</p>}
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------ page
 
 export default function Wallet() {
   const [form, setForm] = useState<Form>(DEMO);
@@ -73,7 +176,9 @@ export default function Wallet() {
   const [walletId, setWalletId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [mode, setMode] = useState<'view' | 'edit'>('view');
+  const [openRow, setOpenRow] = useState('');
+  const [filter, setFilter] = useState<'all' | 'spent' | 'blocked' | 'money'>('all');
+  const [demo, setDemo] = useState<any>(null);
   const source = useRef<EventSource | null>(null);
   const view = useMemo(() => (events.length ? reduceWallet(events) : emptyWallet()), [events]);
   const ownerKey = walletId ? loadKey(walletId) : '';
@@ -95,7 +200,7 @@ export default function Wallet() {
   }, []);
 
   const start = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setOpenRow('');
     try {
       const r = await fetch('/api/wallets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(walletBody(form)) });
       const body = await r.json();
@@ -109,19 +214,35 @@ export default function Wallet() {
     }
   };
 
-  const owner = async (method: string, path: string) => {
-    setError('');
-    const r = await fetch(path, { method, headers: { 'X-Owner-Key': ownerKey } });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok) setError(typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`);
-    return body;
+  const call = async (method: string, path: string, body?: unknown) => {
+    setError(''); setBusy(true);
+    try {
+      const r = await fetch(path, { method, headers: { 'X-Owner-Key': ownerKey, 'Content-Type': 'application/json' },
+                                    body: body === undefined ? undefined : JSON.stringify(body) });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) setError(typeof out.detail === 'string' ? out.detail : `HTTP ${r.status}`);
+      return r.ok ? out : null;
+    } finally {
+      setBusy(false);
+    }
   };
-  const act = (pid: string, action: string) => owner('POST', `/api/wallets/${walletId}/purchases/${pid}/${action}`);
-  const connect = async () => {
-    const body = await owner('POST', `/api/wallets/${walletId}/mandate`);
-    if (body.approve_url) window.location.assign(body.approve_url);
-    else if (body.mode === 'preview') setError('PayPal keys are not set on this server, so payments are a labelled preview.');
+  const act = (pid: string, action: string) => call('POST', `/api/wallets/${walletId}/purchases/${pid}/${action}`);
+  const topUp = async (amount: string) => {
+    const out = await call('POST', `/api/wallets/${walletId}/top-up`, { amount });
+    if (out?.approve_url) window.location.assign(out.approve_url);
   };
+  const stop = () => {
+    if (window.confirm('Stop this wallet? Your AI can\'t spend any more, and everything unspent goes back to you.')) {
+      call('POST', `/api/wallets/${walletId}/stop`);
+    }
+  };
+  const bookDemo = async () => {
+    if (!demo) return;
+    const { proofs: _p, demo: _d, ...brief } = demo;
+    const out = await call('POST', `/api/wallets/${walletId}/promotions`, brief);
+    if (out?.id) setOpenRow(out.id);
+  };
+  const sendProof = (pid: string, url: string) => { setOpenRow(pid); call('POST', `/api/wallets/${walletId}/promotions/${pid}/proof`, { url }); };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -131,130 +252,164 @@ export default function Wallet() {
     if (id && /^[0-9a-f]{12}$/.test(id)) attach(id);   // back from PayPal
     else start();
     if (err) setError(err === 'cancelled' ? 'PayPal was cancelled; nothing was charged.' : err);
+    fetch('/api/demo/promotion').then(r => r.json()).then(setDemo).catch(() => { /* demo extras only */ });
     return () => source.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const t = view.totals;
-  const pct = (n: number) => `${t.budget ? Math.min(100, (n / t.budget) * 100) : 0}%`;
+  const owner = !!ownerKey;
+  const waiting = view.purchases.filter(p => p.status === 'pending');
+  const promo = [...view.purchases].reverse().find(p => p.kind === 'promotion');
+  const shown = view.activity.filter(a => filter === 'all' || (filter === 'spent' && a.status === 'paid')
+    || (filter === 'blocked' && a.tone === 'blocked') || (filter === 'money' && (a.tone === 'in' || a.status === 'returned')));
+  const blockedTotal = view.purchases.filter(p => p.status === 'blocked').reduce((s, p) => s + p.price, 0);
   const field = (k: keyof Form, label: string, props: Record<string, any> = {}) => (
     <label className={`f-${k}`}>{label}
       <input value={form[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} {...props} />
     </label>
   );
-  const waiting = view.purchases.filter(p => p.status === 'pending');
 
   return (
-    <>
-      <p className="tab-intro">Give an AI agent a budget it can't waste. Guild checks every purchase before PayPal pays:
-        a real seller, the right item, the price the page really shows, inside your rules. Then the seller's own PayPal is paid.</p>
+    <div className="gp">
+      <div className="gp-main">
+        <BalanceCard v={view} owner={owner} busy={busy} onTopUp={topUp} onWithdraw={() => call('POST', `/api/wallets/${walletId}/withdraw`)}
+          onStop={stop} />
+        {(error || view.error) && <div className="gp-alert" role="alert">{error || view.error}</div>}
 
-      <form className="want-form wallet-form" onSubmit={e => { e.preventDefault(); if (!busy) start(); }} aria-label="Set up a wallet">
-        {field('must_have', 'Buy (name must include)')}
-        {field('must_not', 'Never (must not include)')}
-        {field('max_price', 'Max item price', { inputMode: 'decimal' })}
-        {field('ship_to', 'Ship to', { maxLength: 2 })}
-        {field('budget', 'Budget (USD)', { inputMode: 'decimal' })}
-        {field('max_per_purchase', 'Max per purchase', { inputMode: 'decimal' })}
-        {field('approve_above', 'Ask me above', { inputMode: 'decimal' })}
-        {field('marketing', 'Marketing envelope', { inputMode: 'decimal', placeholder: 'none' })}
-        {field('tools', 'Tools envelope', { inputMode: 'decimal', placeholder: 'none' })}
-        {field('people', 'People envelope', { inputMode: 'decimal', placeholder: 'none' })}
-        <div className="actions"><button type="submit" disabled={busy}>{busy ? 'Opening…' : 'Give ShopperBot this wallet'}</button></div>
-      </form>
-
-      <section className="goal wallet-bar" aria-live="polite">
-        <div className="wallet-top">
-          <div><span className="k">Wallet</span> {view.want || 'Opening…'}</div>
-          <div className="wallet-actions">
-            {view.mode === 'sandbox' && !view.mandate && !view.closed && ownerKey &&
-              <button className="paypal" onClick={connect}>Connect PayPal (sandbox)</button>}
-            {view.mandate && <span className="pill pill-paid">PayPal connected</span>}
-            {view.checkoutUrl && <a className="paypal-link" href={view.checkoutUrl}>Approve in PayPal ↗</a>}
-            {!view.closed && ownerKey && view.id &&
-              <button className="stop" onClick={() => owner('POST', `/api/wallets/${walletId}/stop`)}>Stop</button>}
-          </div>
-        </div>
-        <div className="budget" role="img"
-          aria-label={`Spent ${money(t.spent)}, waiting ${money(t.reserved)}, left ${money(t.remaining)} of ${money(t.budget)}`}>
-          <span className="b-spent" style={{ width: pct(t.spent) }} />
-          <span className="b-wait" style={{ width: pct(t.reserved) }} />
-        </div>
-        <div className="meta">
-          <b>{money(t.spent)}</b> spent · <b>{money(t.reserved)}</b> waiting for you · <b>{money(t.remaining)}</b> left of {money(t.budget)}
-          {view.mode && <> · payments: {view.mode === 'preview' ? 'preview (no PayPal keys)' : 'PayPal sandbox'}</>}
-          {view.closed && <> · closed</>}
-        </div>
-        {t.envelopes.length > 1 && (
-          <ul className="envelopes" aria-label="Envelopes">
-            {t.envelopes.map(e => {
-              const w = (n: number) => `${e.limit ? Math.min(100, (n / e.limit) * 100) : 0}%`;
-              return (
-                <li key={e.name}>
-                  <span className="env-name">{e.name}</span>
-                  <span className="budget env-bar" role="img"
-                    aria-label={`${e.name}: spent ${money(e.spent)}, waiting ${money(e.reserved)}, left ${money(e.remaining)} of ${money(e.limit)}`}>
-                    <span className="b-spent" style={{ width: w(e.spent) }} />
-                    <span className="b-wait" style={{ width: w(e.reserved) }} />
-                  </span>
-                  <span className="env-left small">{money(e.remaining)} left of {money(e.limit)}</span>
-                </li>
-              );
-            })}
-          </ul>
+        {owner && waiting.length > 0 && (
+          <section className="gp-card gp-ask" aria-label="Needs your OK">
+            <h2>Needs your OK</h2>
+            {waiting.map(p => (
+              <div className="gp-ask-row" key={p.id}>
+                <div className="gp-ask-text">
+                  <b>{p.kind === 'promotion' ? `Promotion by ${p.creator}` : p.item}</b>
+                  <span>{p.shop} · {p.kind === 'promotion' ? 'booked by your AI' : `every check passed, above your ${money(view.approveAbove)} limit`}</span>
+                </div>
+                <div className="gp-ask-amt">{money(p.price)}</div>
+                <div className="gp-ask-btns">
+                  <button className="gp-btn gp-btn-primary" disabled={busy} onClick={() => act(p.id, 'approve')}>Approve</button>
+                  <button className="gp-btn gp-btn-quiet" disabled={busy} onClick={() => act(p.id, 'reject')}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </section>
         )}
-        {error && <div className="error" role="alert">{error}</div>}
-      </section>
 
-      {waiting.length > 0 && ownerKey && (
-        <section className="deal deal-wait" aria-label="Waiting for your approval">
-          <div className="deal-price">{money(waiting[0].price)}</div>
-          <div>
-            <div className="deal-title">{waiting[0].item} at {waiting[0].shop}</div>
-            <div className="muted small">Every check passed. It's above your {money(view.approveAbove)} ask-me amount.</div>
-            <div className="buy-actions">
-              <button className="ok" onClick={() => act(waiting[0].id, 'approve')}>Approve and pay the seller</button>
-              <button className="ghost" onClick={() => act(waiting[0].id, 'reject')}>Reject</button>
+        <section className="gp-card" aria-label="Activity">
+          <div className="gp-card-head">
+            <h2>Activity</h2>
+            <div className="gp-filter" role="group" aria-label="Show">
+              {(['all', 'spent', 'blocked', 'money'] as const).map(f => (
+                <button key={f} className={filter === f ? 'on' : ''} aria-pressed={filter === f} onClick={() => setFilter(f)}>
+                  {{ all: 'All', spent: 'Paid', blocked: 'Blocked', money: 'Money in/out' }[f]}
+                </button>
+              ))}
             </div>
           </div>
+          {blockedTotal > 0 && (
+            <p className="gp-saved"><Icon name="shieldCheck" size={16} /> Guild stopped {money(blockedTotal)} of bad spending before any money moved.</p>
+          )}
+          <ul className="gp-list">
+            {shown.map(a => (
+              <Row key={a.key} a={a} open={openRow === a.key} toggle={() => setOpenRow(openRow === a.key ? '' : a.key)}>
+                {a.purchase && <PurchaseDetail p={a.purchase} />}
+                {owner && a.purchase?.status === 'held' && (
+                  <div className="gp-row-btns">
+                    <button className="gp-btn gp-btn-quiet" disabled={busy} onClick={() => act(a.purchase!.id, 'cancel')}>Cancel and release</button>
+                  </div>
+                )}
+              </Row>
+            ))}
+          </ul>
+          {!shown.length && <p className="gp-empty">{view.id ? 'Nothing here yet.' : 'Opening your wallet…'}</p>}
         </section>
-      )}
+      </div>
 
-      <main className="grid">
-        <section className="panel story" aria-label="What happened">
-          <h2>What happened</h2>
-          <ol>{view.story.map((s, i) => <li key={i} className={s.tone}>{s.text}</li>)}</ol>
-          {!view.story.length && <p className="muted">Waiting for the first event…</p>}
-        </section>
-
-        <section className="panel purchases" aria-label="Purchases">
-          <div className="panel-head">
-            <h2>Purchases</h2>
-            <a className="small" href={MCP} target="_blank" rel="noopener noreferrer">Use this wallet from any agent (MCP) ↗</a>
-          </div>
-          <ul className="buys">{view.purchases.map(p => <PurchaseCard key={p.id} p={p} owner={!!ownerKey} act={act} />)}</ul>
-          {!view.purchases.length && <p className="muted small">No purchase requests yet.</p>}
-        </section>
-
-        <section className="panel studio" aria-label="Wallet dashboard">
-          <div className="panel-head">
-            <h2>Wallet dashboard <span className="by">AG Studio</span></h2>
-            <div className="seg" role="group" aria-label="Dashboard mode">
-              <button className={mode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>View</button>
-              <button className={mode === 'edit' ? 'on' : ''} onClick={() => setMode('edit')}>Edit</button>
+      <aside className="gp-side">
+        <section className="gp-card" aria-label="Your AI">
+          <div className="gp-agent">
+            <span className="gp-avatar gp-avatar-ai"><Icon name="bot" /></span>
+            <div>
+              <h2>{agentName(view.agent) || 'Your AI'}</h2>
+              <p className="gp-sub">{view.agentMode === 'scripted' ? 'Scripted demo agent' : view.agentMode === 'live' ? 'Claude, live'
+                : view.totals.funded === 0 && view.agent === 'shopperbot' ? 'Starts shopping once the wallet has money' : 'Shops with this wallet'}</p>
             </div>
           </div>
-          <div className="studio-scroll"><div className="studio-box studio-box-wallet">
-            <Suspense fallback={<Loading what="the AG Studio dashboard" />}><Dashboard kind="wallet" view={view} mode={mode} /></Suspense>
-          </div></div>
+          {view.notes.length > 0 && (
+            <ul className="gp-notes" aria-label="What your AI said">
+              {view.notes.slice(-3).map((n, i) => <li key={i}>{n}</li>)}
+            </ul>
+          )}
+          <p className="gp-small">Any AI agent can use a wallet like this, through <a href={MCP} target="_blank" rel="noopener noreferrer">MCP</a> or
+            the <a href={AGENTS_GUIDE} target="_blank" rel="noopener noreferrer">REST API</a>. It can only ask; Guild checks, then pays from the loaded money.</p>
         </section>
 
-        <section className="panel timeline" aria-label="Purchase timeline">
-          <h2>Purchase timeline <span className="by">Bryntum Gantt</span></h2>
-          <p className="muted small">Seconds since the wallet opened. Red ◆ blocked, amber ◆ waiting for you, green ◆ paid.</p>
-          <div className="gantt-box"><Suspense fallback={<Loading what="the Bryntum timeline" />}><Timeline kind="wallet" view={view} /></Suspense></div>
+        <section className="gp-card" aria-label="Pay a creator on proof">
+          <div className="gp-card-head"><h2>Pay a creator on proof</h2><Icon name="megaphone" /></div>
+          <p className="gp-small">Book a creator for a post. The money is held in your wallet and paid only when the post is live,
+            on their channel, links to you and says it's an ad.</p>
+          {!promo && owner && !view.closed && (
+            <button className="gp-btn gp-btn-outline" disabled={busy || !view.id || !demo} onClick={bookDemo}>Book the demo creator · $40</button>
+          )}
+          {promo && (
+            <div className="gp-promo">
+              <div className="gp-promo-head"><b>{promo.creator}</b><span className={`gp-pill pill-${promo.status}`}>{STATUS[promo.status] ?? promo.status}</span></div>
+              {promo.status === 'held' && demo && (
+                <>
+                  <p className="gp-small">Try sending a post as proof:</p>
+                  <div className="gp-proof-btns">
+                    <button className="gp-btn gp-btn-quiet" disabled={busy} onClick={() => sendProof(promo.id, demo.proofs.copycat)}>Copied post</button>
+                    <button className="gp-btn gp-btn-quiet" disabled={busy} onClick={() => sendProof(promo.id, demo.proofs.hidden_ad)}>Hidden #ad</button>
+                    <button className="gp-btn gp-btn-quiet" disabled={busy} onClick={() => sendProof(promo.id, demo.proofs.no_link)}>No link</button>
+                    <button className="gp-btn gp-btn-primary" disabled={busy} onClick={() => sendProof(promo.id, demo.proofs.good)}>The real post</button>
+                  </div>
+                </>
+              )}
+              {promo.proofs.length > 0 && (
+                <p className={`gp-small ${promo.proofs[promo.proofs.length - 1].valid ? 'ok' : 'no'}`}>
+                  Last proof: {promo.proofs[promo.proofs.length - 1].reasons.join('; ')}
+                </p>
+              )}
+            </div>
+          )}
         </section>
-      </main>
-    </>
+
+        <section className="gp-card" aria-label="Your rules">
+          <div className="gp-card-head"><h2>Your rules</h2><Icon name="rules" /></div>
+          <dl className="gp-rules">
+            <div><dt>Buy</dt><dd>{view.mustHave.join(', ') || '—'}</dd></div>
+            <div><dt>Never</dt><dd>{view.mustNot.join(', ') || '—'}</dd></div>
+            <div><dt>Most per purchase</dt><dd>{money(view.maxPerPurchase)}</dd></div>
+            <div><dt>Ask me above</dt><dd>{money(view.approveAbove)}</dd></div>
+            <div><dt>Wallet holds up to</dt><dd>{money(view.totals.budget)}</dd></div>
+          </dl>
+          {view.totals.envelopes.length > 1 && (
+            <ul className="gp-limits" aria-label="Spending limits">
+              {view.totals.envelopes.map(e => (
+                <li key={e.name}>
+                  <span className="gp-limit-name">{e.name}</span>
+                  <span className="gp-limit-left">{money(e.remaining)} left of {money(e.limit)}</span>
+                  <span className="gp-minibar" aria-hidden><span style={{ width: `${e.limit ? Math.min(100, ((e.spent + e.reserved) / e.limit) * 100) : 0}%` }} /></span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <details className="gp-new">
+            <summary>New wallet with different rules</summary>
+            <form className="gp-form" onSubmit={e => { e.preventDefault(); if (!busy) start(); }}>
+              {field('must_have', 'Buy (name must include)')}
+              {field('must_not', 'Never buy (words)')}
+              {field('max_price', 'Max item price', { inputMode: 'decimal' })}
+              {field('ship_to', 'Ship to (country)', { maxLength: 2 })}
+              {field('budget', 'Wallet holds up to', { inputMode: 'decimal' })}
+              {field('max_per_purchase', 'Most per purchase', { inputMode: 'decimal' })}
+              {field('approve_above', 'Ask me above', { inputMode: 'decimal' })}
+              {field('marketing', 'Of which for marketing', { inputMode: 'decimal' })}
+              <button type="submit" className="gp-btn gp-btn-primary" disabled={busy}>{busy ? 'Opening…' : 'Open new wallet'}</button>
+            </form>
+          </details>
+        </section>
+      </aside>
+    </div>
   );
 }

@@ -9,19 +9,25 @@ Everything runs without keys, with labelled simulated agents and a PayPal previe
 3. `RENDER_EXTERNAL_URL` is set by Render automatically. PayPal returns and the KERNEL browser both use it.
 4. **Keep it warm for judges.** The free tier sleeps after 15 idle minutes, and waking takes about 50 s. In GitHub, go to **Settings → Secrets and variables → Actions → Variables** and add `GUILD_URL` = your Render URL. The `keep-warm` workflow then pings `/healthz` every 10 minutes. A paid Starter instance avoids sleeping entirely.
 
-## 2. PayPal sandbox (wallets: Vault and pay-the-seller; bounties: hold, capture, payouts)
+## 2. PayPal sandbox (wallets: add money, pay sellers and creators, return unspent; bounties: hold, capture, payouts)
 
 1. Go to [developer.paypal.com](https://developer.paypal.com) → **Apps & Credentials**, and make sure the toggle is on **Sandbox**.
-2. Create an app (or use the default one). Copy its **Client ID** and **Secret** into Render as `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`.
-3. In the app's features, turn on **Payouts** (for bounties) and **Vault / Save payment methods** (for the wallet's one-time permission), if they're listed.
-4. Under **Testing Tools → Sandbox Accounts**, create a **Business** account for Harbor Audio (the demo seller that gets paid), and set:
-   `GUILD_SELLER_ACCOUNTS=harbor-audio=<that business email>`
-   Other demo shops can be added the same way (`northline`, `metro-tech`, …). For pay-on-proof marketing, add the demo creator's **Personal** sandbox account the same way: `maya-reviews=<email>`. Without this, purchases from them have a placeholder payee and fail in sandbox mode.
+2. Create an app (or use the default one). Copy its **Client ID** and **Secret** into Render as `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. The app's own sandbox business account is where wallet top-ups land.
+3. In the app's features, turn on **Payouts**. Wallets pay sellers and creators with it, and bounties pay the winning developer.
+4. Under **Testing Tools → Sandbox Accounts**, create a **Business** account for Harbor Audio (the demo seller) and a **Personal** account for Maya Reviews (the demo creator), and set:
+   `GUILD_SELLER_ACCOUNTS=harbor-audio=<business email>,maya-reviews=<personal email>`
+   Other demo shops can be added the same way (`northline`, `metro-tech`, …). Without this, their payouts go to placeholder addresses and fail in sandbox mode, and the money is released back to the wallet.
 5. For bounties, create a **Personal account** per agent owner (agents may share one). Leave out any agent you don't need. Then set:
    `GUILD_AGENT_OWNERS=scout=<email1>,browser=<email2>,quickfind=<email3>,sourcer=<email4>,researcher=<email5>,web_operator=<email6>,doer=<email7>`
 6. Note one sandbox **Personal** account as the **buyer** (the wallet owner) for judges. Its login goes in the Devpost "test credentials" field, not in this repo.
-7. `/healthz` should now show `"payments": "PayPal sandbox"` and `"wallets": {"payments": "sandbox"}`. The wallet page shows **Connect PayPal (sandbox)**.
-8. **First live test:** open a wallet, connect PayPal, and approve the $299 purchase. If PayPal refuses a vaulted payment to another account, the feed shows PayPal's error name and debug id. Then stop, open a new wallet without connecting PayPal, and approve again: that uses the checkout route, still paid to the seller.
+7. `/healthz` should now show `"payments": "PayPal sandbox"` and `"wallets": {"payments": "sandbox"}`. A new wallet starts empty, and the balance card offers **Pay with PayPal**.
+8. **First live test:**
+   1. Open the page, pick $400 and tap **Pay with PayPal**. Log in as the buyer and pay. Back on the page, the balance shows $400 and ShopperBot starts.
+   2. Approve the $299 purchase. The activity row shows the payout batch id; check that Harbor Audio's sandbox account received $299.
+   3. Book the demo creator ($40) and send **The real post**. Check that Maya Reviews' sandbox account received $40.
+   4. Tap **Return unspent**. Check the buyer's sandbox account for the refund of the rest ($61).
+
+   If a payout fails, the row shows PayPal's error name and debug id, and the money stays in the wallet.
 
 Guild refuses any `PAYPAL_BASE_URL` that isn't `https://api-m.sandbox.paypal.com`, so a live key can't move real money here.
 

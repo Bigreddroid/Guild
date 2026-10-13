@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from guild import funding, shops
 from guild.bounty import Claim, Offer, Verdict
 from guild.paypal import PayPalClient, PayPalError
-from guild.wallet import APPROVED, FAILED, PAID, REFUNDED, Policy, Wallet, WalletError
+from guild.wallet import APPROVED, FAILED, PAID, Policy, Wallet, WalletError
 from guild.walletpay import WalletPay
 
 PUBLIC = "https://guild.example"
@@ -20,9 +20,9 @@ SELLER = {"email_address": "harbor@business.example.com"}
 class FakeSandbox:
     """The PayPal sandbox calls Guild Pay makes, at the transport level."""
 
-    def __init__(self, fail=None, vault_status="COMPLETED"):
-        self.calls, self.fail, self.vault_status = [], fail or {}, vault_status
-        self.orders, self.tokens = {}, set()
+    def __init__(self, fail=None, payout_status="PENDING"):
+        self.calls, self.fail, self.payout_status = [], fail or {}, payout_status
+        self.orders, self.refunds = {}, []
 
     def __call__(self, method, url, headers, body):
         path = urllib.parse.urlsplit(url).path
@@ -33,57 +33,28 @@ class FakeSandbox:
                 raise err
         if path == "/v1/oauth2/token":
             return {"access_token": "tok", "expires_in": 3600}
-        if path == "/v3/vault/setup-tokens":
-            return {"id": "SETUP1", "status": "PAYER_ACTION_REQUIRED",
-                    "links": [{"rel": "approve", "href": "https://www.sandbox.paypal.com/agreements/approve?approval_session_id=SETUP1"}]}
-        if path == "/v3/vault/payment-tokens":
-            self.tokens.add("PT1")
-            return {"id": "PT1", "payment_source": {"paypal": {"email_address": "owner@personal.example.com"}}}
-        if path.startswith("/v3/vault/payment-tokens/") and method == "DELETE":
-            self.tokens.discard(path.rsplit("/", 1)[1])
-            return {}
         if path == "/v2/checkout/orders":
             oid = f"ORDER{len(self.orders) + 1}"
             self.orders[oid] = data
-            if data["intent"] == "AUTHORIZE":
-                self.holds = getattr(self, "holds", {})
-                if "vault_id" in data["payment_source"]["paypal"]:
-                    self.holds[f"AUTH-{oid}"] = "CREATED"
-                    return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"authorizations": [
-                        {"id": f"AUTH-{oid}", "status": "CREATED"}]}}]}
-                return {"id": oid, "status": "PAYER_ACTION_REQUIRED",
-                        "links": [{"rel": "payer-action", "href": f"https://www.sandbox.paypal.com/checkoutnow?token={oid}"}]}
-            if "vault_id" in data["payment_source"]["paypal"]:
-                return {"id": oid, "status": self.vault_status, "purchase_units": [{"payments": {"captures": [
-                    {"id": f"CAP-{oid}", "status": "COMPLETED"}]}}] if self.vault_status == "COMPLETED" else []}
             return {"id": oid, "status": "PAYER_ACTION_REQUIRED",
                     "links": [{"rel": "payer-action", "href": f"https://www.sandbox.paypal.com/checkoutnow?token={oid}"}]}
-        if path.endswith("/authorize"):
-            oid = path.split("/")[-2]
-            self.holds = getattr(self, "holds", {})
-            self.holds[f"AUTH-{oid}"] = "CREATED"
-            return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"authorizations": [
-                {"id": f"AUTH-{oid}", "status": "CREATED"}]}}]}
-        if path.startswith("/v2/payments/authorizations/"):
-            auth = path.split("/")[4]
-            if method == "GET":
-                return {"id": auth, "status": self.holds.get(auth, "VOIDED")}
-            if path.endswith("/capture"):
-                self.holds[auth] = "CAPTURED"
-                return {"id": f"CAP-{auth}", "status": "COMPLETED"}
-            if path.endswith("/void"):
-                self.holds[auth] = "VOIDED"
-                return {}
         if path.endswith("/capture"):
             oid = path.split("/")[-2]
             return {"id": oid, "status": "COMPLETED", "purchase_units": [{"payments": {"captures": [
                 {"id": f"CAP-{oid}", "status": "COMPLETED"}]}}]}
         if path.endswith("/refund"):
-            return {"id": "REF1", "status": "COMPLETED"}
+            self.refunds.append((path.split("/")[-2], data["amount"]["value"], headers.get("PayPal-Request-Id")))
+            return {"id": f"REF{len(self.refunds)}", "status": "COMPLETED"}
+        if path == "/v1/payments/payouts":
+            return {"batch_header": {"payout_batch_id": f"BATCH-{data['items'][0]['sender_item_id']}",
+                                     "batch_status": self.payout_status}}
         raise AssertionError(f"unexpected {method} {path}")
 
     def paths(self):
         return [(m, p) for m, p, _, _ in self.calls if p != "/v1/oauth2/token"]
+
+    def payouts(self):
+        return [d for _, p, _, d in self.calls if p == "/v1/payments/payouts"]
 
 
 def ok(price, url):
@@ -92,10 +63,11 @@ def ok(price, url):
                                               availability="instock"), {})
 
 
-def setup(fake=None, public=PUBLIC):
+def setup(fake=None, public=PUBLIC, funded="0"):
     fake = fake or FakeSandbox()
     pay = WalletPay(PayPalClient(funding.SANDBOX_URL, "id", "secret", transport=fake), public)
-    wallet = Wallet("w1", "shopper", Policy(Decimal("400"), Decimal("350"), Decimal("250"), shops.DEMO_WANT))
+    wallet = Wallet("w1", "shopper", Policy(Decimal("400"), Decimal("350"), Decimal("250"), shops.DEMO_WANT),
+                    Decimal(funded))
     return fake, pay, wallet
 
 
@@ -103,102 +75,123 @@ def link_of(url):
     return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["link"][0]
 
 
-class MandateTests(unittest.TestCase):
-    def test_owner_approves_once_and_guild_keeps_only_the_token(self):
+def top_up(fake, pay, wallet, amount):
+    started = pay.start_top_up(wallet, Decimal(amount))
+    ret = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]["return_url"]
+    oid = urllib.parse.parse_qs(urllib.parse.urlsplit(started["approve_url"]).query)["token"][0]
+    return started, pay.finish_top_up(link_of(ret), oid, {"w1": wallet})[1]
+
+
+class TopUpTests(unittest.TestCase):
+    def test_the_owner_loads_money_in_paypal_and_only_that_can_be_spent(self):
         fake, pay, wallet = setup()
-        url = pay.start_mandate(wallet)
-        self.assertIn("sandbox.paypal.com", url)
-        body = fake.calls[-1][3]["payment_source"]["paypal"]
-        return_url = body["experience_context"]["return_url"]
-        self.assertTrue(return_url.startswith(f"{PUBLIC}/api/wallets/paypal/mandate?link="))
-        pay.finish_mandate(link_of(return_url), {"w1": wallet})
-        self.assertEqual(wallet.mandate_id, "PT1")
-        with self.assertRaises(WalletError):  # links are single-use
-            pay.finish_mandate(link_of(return_url), {"w1": wallet})
-        self.assertEqual(pay.revoke(wallet), {"type": "mandate", "revoked": True})
-        self.assertEqual((wallet.mandate_id, fake.tokens), ("", set()))
-        self.assertIn(("DELETE", "/v3/vault/payment-tokens/PT1"), fake.paths())
+        self.assertEqual(wallet.decide("https://a.example/1", "x", ok("10", "https://a.example/1"), payee=SELLER).reasons,
+                         ["10.00 is over the money left in the wallet (0.00); top it up first"])
+        started, done = top_up(fake, pay, wallet, "150")
+        self.assertIn("sandbox.paypal.com", started["approve_url"])
+        order = fake.orders["ORDER1"]
+        self.assertEqual((order["intent"], order["purchase_units"][0]["amount"]["value"]), ("CAPTURE", "150.00"))
+        self.assertNotIn("payee", order["purchase_units"][0])          # a top-up is paid to Guild, not a seller
+        self.assertEqual((done["type"], wallet.totals()["funded"], wallet.top_ups[0]["capture_id"]),
+                         ("topped_up", "150.00", "CAP-ORDER1"))
+        self.assertEqual(wallet.decide("https://a.example/2", "x", ok("151", "https://a.example/2"), payee=SELLER).reasons,
+                         ["151.00 is over the money left in the wallet (150.00)"])
+
+    def test_links_are_single_use_and_match_their_order(self):
+        fake, pay, wallet = setup()
+        pay.start_top_up(wallet, Decimal("50"))
+        ret = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]["return_url"]
+        with self.assertRaises(WalletError):
+            pay.finish_top_up(link_of(ret), "ORDER-OTHER", {"w1": wallet})
+        with self.assertRaises(WalletError):
+            pay.finish_top_up(link_of(ret), "ORDER1", {"w1": wallet})   # spent by the mismatch
+        self.assertEqual(wallet.funded, Decimal("0"))
+
+    def test_a_wallet_never_holds_more_than_its_limit(self):
+        fake, pay, wallet = setup(funded="350")
+        with self.assertRaises(WalletError):
+            pay.start_top_up(wallet, Decimal("51"))
+        started = pay.start_top_up(wallet, Decimal("50"))
+        wallet.top_up(Decimal("10"))   # something else filled it meanwhile
+        ret = fake.calls[-1][3]["payment_source"]["paypal"]["experience_context"]["return_url"]
+        with self.assertRaises(WalletError):
+            pay.finish_top_up(link_of(ret), "ORDER1", {"w1": wallet})
+        self.assertEqual(fake.refunds[0][:2], ("CAP-ORDER1", "50.00"))    # money it can't take goes straight back
+        self.assertTrue(started["approve_url"])
 
     def test_preview_without_keys(self):
         pay = WalletPay(None)
-        wallet = Wallet("w1", "a", Policy(Decimal("400"), Decimal("350"), Decimal("250"), shops.DEMO_WANT))
-        self.assertEqual(pay.mode, "preview")
-        self.assertIsNone(pay.start_mandate(wallet))
-        p = wallet.decide("https://a.example/1", "x", ok("10", "https://a.example/1"), payee=SELLER)
-        event = pay.pay(wallet, p)
-        self.assertEqual((event["type"], event["mode"], p.order_id), ("paid", "preview", f"PREVIEW-{p.id}"))
-        self.assertEqual(pay.refund(wallet, p)["type"], "refunded")
+        wallet = Wallet("w1", "a", Policy(Decimal("400"), Decimal("350"), Decimal("250"), shops.DEMO_WANT), Decimal("0"))
+        self.assertEqual(pay.start_top_up(wallet, Decimal("100"))["type"], "topped_up")
+        p = wallet.decide("https://a.example/1", "x", ok("20", "https://a.example/1"), payee=SELLER)
+        self.assertEqual(pay.pay(wallet, p)["mode"], "preview")
+        self.assertEqual(pay.withdraw(wallet)["amount"], "80.00")
+        self.assertEqual((wallet.funded, wallet.withdrawn, wallet.balance()), (Decimal("20"), Decimal("80"), Decimal("0")))
 
 
 class PaymentTests(unittest.TestCase):
-    def test_with_a_mandate_the_seller_is_paid_directly(self):
-        fake, pay, wallet = setup()
-        wallet.mandate_id = "PT1"
-        p = wallet.decide("https://a.example/1", "Sony WH-1000XM5", ok("199", "https://a.example/1"), payee=SELLER)
+    def test_approved_purchases_are_paid_out_to_the_seller(self):
+        fake, pay, wallet = setup(funded="400")
+        p = wallet.decide("https://a.example/1", "x", ok("120", "https://a.example/1"), payee=SELLER)
         event = pay.pay(wallet, p)
-        self.assertEqual((event["type"], event["via"], p.status, p.capture_id), ("paid", "mandate", PAID, "CAP-ORDER1"))
-        order = fake.orders["ORDER1"]
-        unit = order["purchase_units"][0]
-        self.assertEqual((order["intent"], unit["payee"], unit["amount"]["value"], unit["reference_id"]),
-                         ("CAPTURE", SELLER, "199.00", p.id))
-        self.assertEqual(order["payment_source"], {"paypal": {"vault_id": "PT1"}})
-        self.assertEqual(fake.calls[-1][2], f"{p.id}-pay")  # a retry can't charge twice
-
-    def test_without_a_mandate_the_owner_pays_in_checkout_then_it_is_captured(self):
-        fake, pay, wallet = setup()
-        p = wallet.decide("https://a.example/1", "x", ok("199", "https://a.example/1"), payee=SELLER)
-        event = pay.pay(wallet, p)
-        self.assertEqual(event["type"], "checkout")
-        self.assertEqual(p.status, APPROVED)  # still reserved until PayPal confirms
-        ctx = fake.orders["ORDER1"]["payment_source"]["paypal"]["experience_context"]
-        link = link_of(ctx["return_url"])
-        with self.assertRaises(WalletError):
-            pay.finish_checkout(link, "ORDER-OTHER", {"w1": wallet})  # token must match; link now spent
-        p2 = wallet.decide("https://a.example/2", "x", ok("20", "https://a.example/2"), payee=SELLER)
+        self.assertEqual((event["type"], p.status, p.order_id), ("paid", PAID, f"BATCH-{p.id}"))
+        item = fake.payouts()[0]["items"][0]
+        self.assertEqual((item["recipient_type"], item["receiver"], item["amount"]["value"]),
+                         ("EMAIL", "harbor@business.example.com", "120.00"))
+        self.assertEqual(fake.calls[-1][2], f"guildpay-{p.id}")       # the batch id is the idempotency key
+        p2 = wallet.decide("https://a.example/2", "x", ok("10", "https://a.example/2"), payee={"merchant_id": "M123"})
         pay.pay(wallet, p2)
-        ctx2 = fake.orders["ORDER2"]["payment_source"]["paypal"]["experience_context"]
-        _, done = pay.finish_checkout(link_of(ctx2["return_url"]), "ORDER2", {"w1": wallet})
-        self.assertEqual((done["type"], p2.status, p2.capture_id), ("paid", PAID, "CAP-ORDER2"))
-        self.assertEqual(fake.orders["ORDER2"]["purchase_units"][0]["payee"], SELLER)
+        self.assertEqual(fake.payouts()[1]["items"][0]["recipient_type"], "PAYPAL_ID")
+        with self.assertRaises(WalletError):
+            pay.pay(wallet, p)   # only approved purchases
 
-    def test_payment_failures_release_the_budget_and_say_why(self):
-        err = PayPalError(422, {"name": "PAYEE_ACCOUNT_RESTRICTED", "debug_id": "dbg1"})
-        fake, pay, wallet = setup(FakeSandbox(fail={"/v2/checkout/orders": err}))
-        wallet.mandate_id = "PT1"
-        p = wallet.decide("https://a.example/1", "x", ok("199", "https://a.example/1"), payee=SELLER)
+    def test_payment_failures_release_the_money_and_say_why(self):
+        fake, pay, wallet = setup(FakeSandbox(fail={"/payouts": PayPalError(422, {"name": "RECEIVER_UNREGISTERED",
+                                                                                   "debug_id": "dbg1"})}), funded="400")
+        p = wallet.decide("https://a.example/1", "x", ok("20", "https://a.example/1"), payee=SELLER)
         self.assertEqual(pay.pay(wallet, p)["type"], "failed")
-        self.assertEqual((p.status, p.reasons), (FAILED, ["payment failed: PAYEE_ACCOUNT_RESTRICTED (debug id dbg1)"]))
-        self.assertEqual(wallet.totals()["spent"], "0.00")
-        fake2, pay2, wallet2 = setup(FakeSandbox(vault_status="PAYER_ACTION_REQUIRED"))
-        wallet2.mandate_id = "PT1"
-        p2 = wallet2.decide("https://a.example/1", "x", ok("10", "https://a.example/1"), payee=SELLER)
+        self.assertEqual((p.status, p.reasons), (FAILED, ["payment failed: RECEIVER_UNREGISTERED (debug id dbg1)"]))
+        self.assertEqual(wallet.totals()["remaining"], "400.00")
+        fake2, pay2, wallet2 = setup(FakeSandbox(payout_status="DENIED"), funded="400")
+        p2 = wallet2.decide("https://a.example/1", "x", ok("20", "https://a.example/1"), payee=SELLER)
         self.assertEqual(pay2.pay(wallet2, p2)["type"], "failed")
-        self.assertIn("PAYER_ACTION_REQUIRED", p2.reasons[0])
+        self.assertEqual(p2.reasons, ["payment failed: payout DENIED"])
 
-    def test_refunds_go_back_to_the_owner_and_free_the_budget(self):
+
+class WithdrawTests(unittest.TestCase):
+    def test_unspent_money_goes_back_newest_top_up_first(self):
         fake, pay, wallet = setup()
-        wallet.mandate_id = "PT1"
-        p = wallet.decide("https://a.example/1", "x", ok("199", "https://a.example/1"), payee=SELLER)
+        top_up(fake, pay, wallet, "100")
+        top_up(fake, pay, wallet, "50")
+        p = wallet.decide("https://a.example/1", "x", ok("30", "https://a.example/1"), payee=SELLER)
         pay.pay(wallet, p)
-        event = pay.refund(wallet, p)
-        self.assertEqual((event["type"], p.status, wallet.totals()["spent"]), ("refunded", REFUNDED, "0.00"))
-        method, path, request_id, body = fake.calls[-1]
-        self.assertEqual((path, request_id, body["amount"]["value"]),
-                         ("/v2/payments/captures/CAP-ORDER1/refund", "CAP-ORDER1-refund", "199.00"))
-        with self.assertRaises(WalletError):
-            pay.refund(wallet, p)
+        waiting = wallet.decide("https://a.example/2", "x", ok("300", "https://a.example/2"), payee=SELLER)
+        self.assertNotEqual(waiting.status, APPROVED)
+        out = pay.withdraw(wallet)
+        self.assertEqual((out["type"], out["amount"]), ("withdrawn", "120.00"))
+        self.assertEqual([r[:2] for r in fake.refunds], [("CAP-ORDER2", "50.00"), ("CAP-ORDER1", "70.00")])
+        self.assertEqual((wallet.balance(), wallet.withdrawn), (Decimal("0.00"), Decimal("120.00")))
+        self.assertEqual(pay.withdraw(wallet)["amount"], "0.00")
 
-    def test_only_approved_purchases_can_be_paid(self):
+    def test_partial_returns_of_one_top_up_use_fresh_request_ids(self):
         fake, pay, wallet = setup()
-        pending = wallet.decide("https://a.example/1", "x", ok("300", "https://a.example/1"), payee=SELLER)
-        with self.assertRaises(WalletError):
-            pay.pay(wallet, pending)
-        self.assertEqual(fake.paths(), [])
+        top_up(fake, pay, wallet, "100")
+        wallet.decide("https://a.example/1", "x", ok("40", "https://a.example/1"), payee=SELLER)  # approved, reserved
+        pay.withdraw(wallet)
+        self.assertEqual(fake.refunds[-1][:2], ("CAP-ORDER1", "60.00"))
+        wallet.record_payment(wallet.purchases[0].id, error="x")   # the 40 is free again
+        pay.withdraw(wallet)
+        self.assertEqual(fake.refunds[-1][:2], ("CAP-ORDER1", "40.00"))
+        self.assertNotEqual(fake.refunds[0][2], fake.refunds[1][2])
 
-    def test_paypal_is_only_ever_the_sandbox(self):
-        self.assertTrue(funding.is_paypal_sandbox(funding.SANDBOX_URL))
-        for live in ("https://api-m.paypal.com", "https://api-m.sandbox.paypal.com.evil.example"):
-            self.assertFalse(funding.is_paypal_sandbox(live), live)
+    def test_a_failed_refund_keeps_the_money_and_says_why(self):
+        fake, pay, wallet = setup()
+        top_up(fake, pay, wallet, "100")
+        fake.fail["/refund"] = PayPalError(422, {"name": "CAPTURE_FULLY_REFUNDED"})
+        out = pay.withdraw(wallet)
+        self.assertEqual((out["type"], out["amount"], out["error"]), ("withdraw_failed", "0.00", "CAPTURE_FULLY_REFUNDED"))
+        self.assertEqual(wallet.balance(), Decimal("100.00"))
+
 
 if __name__ == "__main__":
     unittest.main()
